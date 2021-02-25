@@ -1,0 +1,11 @@
+#- b!
+RUSTFLAGS="-L src/gen"
+make src/gen/liblexer.a
+cargo +nightly build
+#/
+
+#-
+RUSTFLAGS="-L src/gen"
+make src/gen/liblexer.a
+cargo +nightly run -- "test/$1.lok"
+#/

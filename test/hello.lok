@@ -1,0 +1,7 @@
+extern fn puts(*const c_char) -> c_int;
+extern fn putchar(c_int) -> c_int;
+
+entry -> i32 {
+	putchar(64 /* @ */);
+	return 0;
+}

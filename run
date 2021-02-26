@@ -1,3 +1,5 @@
+$opt default_positionals
+
 #- b!
 RUSTFLAGS="-L src/gen"
 make src/gen/liblexer.a
@@ -8,4 +10,13 @@ cargo +nightly build
 RUSTFLAGS="-L src/gen"
 make src/gen/liblexer.a
 cargo +nightly run -- "test/$1.lok"
+#/
+
+#lok
+gcc todo.o -o todo
+./todo
+#/
+
+#lok-clean r
+rm -f todo todo.o
 #/

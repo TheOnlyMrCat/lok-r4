@@ -250,6 +250,7 @@ impl NameResolveMap<'_> {
 //MARK: Compiler
 use inkwell::context::Context;
 use inkwell::builder::Builder;
+use inkwell::basic_block::BasicBlock;
 use inkwell::module::{Module, Linkage};
 use inkwell::targets::{Target, TargetMachine, RelocMode, CodeModel, FileType, InitializationConfig};
 use inkwell::types::{BasicType, StructType, BasicTypeEnum};
@@ -326,13 +327,26 @@ impl Compiler {
 	fn get_type(&self, ty: &lir::Type) -> BasicTypeEnum<'_> {
 		match ty {
 			lir::Type::PtrConst(t) | lir::Type::PtrMut(t) => self.get_type(&t).ptr_type(AddressSpace::Generic).into(),
-			lir::Type::PtrDynConst(_) | lir::Type::PtrDynMut(_) => todo!(),
+			lir::Type::PtrDynConst(t) | lir::Type::PtrDynMut(t) => self.llvm.struct_type(&[
+				self.llvm.ptr_sized_int_type(&self.machine.get_target_data(), None).into(),
+				self.get_type(&t).ptr_type(AddressSpace::Generic).into()
+			], false).into(),
 			lir::Type::Arr(..) => todo!(),
 			lir::Type::Tuple(..) => todo!(),
 			lir::Type::Name(lir::Ident(id)) => match &**id {
+				"i8" => self.llvm.i8_type().into(),
+				"i16" => self.llvm.i16_type().into(),
 				"i32" => self.llvm.i32_type().into(),
-				"c_int" => self.llvm.i32_type().into(), //TODO: Data model
+				"i64" => self.llvm.i64_type().into(),
 				"c_char" => self.llvm.i8_type().into(),
+				"c_short" => self.llvm.i16_type().into(), // ILP32, LLP64, LP64
+				"c_int" => self.llvm.i32_type().into(), // ILP32, LLP64, LP64
+				"c_long" => if self.machine.get_triple().as_str().to_bytes().split(|&b| b == b'-').skip(2).next().unwrap() == b"windows" {
+					self.llvm.i32_type().into() // ILP32, LLP64 (Windows APIs)
+				} else {
+					self.llvm.ptr_sized_int_type(&self.machine.get_target_data(), None).into() // ILP32, LP64
+				}
+				"c_longlong" => self.llvm.i64_type().into(),
 				_ => todo!(),
 			},
 			lir::Type::Void => todo!(),
@@ -350,25 +364,25 @@ impl Compiler {
 			pointers.insert(decl.name, builder.build_alloca(self.get_type(&decl.ty), "var"));
 		}
 
-		self.compile_block(body.block, "entry", &pointers, module, fn_value)
+		builder.build_unconditional_branch(self.compile_block(body.block, "entry", &pointers, module, fn_value));
 	}
 
-	fn compile_block<'ctx>(&'ctx self, block: lir::Block, name: &str, pointers: &HashMap<String, PointerValue<'ctx>>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>) {
+	fn compile_block<'ctx>(&'ctx self, block: lir::Block, name: &str, pointers: &HashMap<String, PointerValue<'ctx>>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>) -> BasicBlock<'ctx> {
 		let builder = self.llvm.create_builder();
-		let basic_block = self.llvm.append_basic_block(fn_value, name);
-		builder.position_at_end(basic_block);
+		let root_block = self.llvm.append_basic_block(fn_value, name);
+		builder.position_at_end(root_block);
 
 		let mut has_returned = false;
 		for statement in block.statements {
-			debug_assert_eq!(has_returned, false, "Statements after return");
+			debug_assert!(!has_returned, "Statements after return");
 			match statement {
 				lir::Statement::Eval(expr) => {
-					self.compile_expr(expr.value, module, fn_value, &builder);
+					self.compile_expr(expr.value, pointers, module, fn_value, &builder);
 				},
 				lir::Statement::Return(expr) => {
 					match expr {
 						Some(expr) => {
-							let value = self.compile_expr(expr.value, module, fn_value, &builder).unwrap();
+							let value = self.compile_expr(expr.value, pointers, module, fn_value, &builder).unwrap();
 							debug_assert_eq!(value.get_type(), fn_value.get_type().get_return_type().unwrap());
 							builder.build_return(Some(&value));
 							has_returned = true;
@@ -387,13 +401,15 @@ impl Compiler {
 		if !has_returned {
 			builder.build_return(None);
 		}
+
+		root_block
 	}
 
-	fn compile_expr<'ctx>(&'ctx self, expr: lir::ExpressionValue, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> Option<BasicValueEnum<'ctx>> {
+	fn compile_expr<'ctx>(&'ctx self, expr: lir::ExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> Option<BasicValueEnum<'ctx>> {
 		match expr {
 			lir::ExpressionValue::Call(id, args) => {
 				let callee = module.get_function(&id.0).expect("Undefined reference to function");
-				let arguments = args.into_iter().map(|expr| self.compile_expr(expr.value, module, fn_value, builder)).collect::<Option<Vec<_>>>()?;
+				let arguments = args.into_iter().map(|expr| self.compile_expr(expr.value, pointers, module, fn_value, builder)).collect::<Option<Vec<_>>>()?;
 				builder.build_call(callee, &arguments, "calltmp").try_as_basic_value().left()
 			},
 			lir::ExpressionValue::ConstInt(val) => Some(BasicValueEnum::IntValue(self.llvm.i32_type().const_int(val as u64, true))),

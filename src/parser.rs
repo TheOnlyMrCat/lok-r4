@@ -54,7 +54,7 @@ struct TokenStream {
 pub struct Token {
 	ty: TokenType,
 	value: String,
-	location: std::ops::RangeInclusive<usize>
+	location: std::ops::Range<usize>
 }
 
 #[derive(Debug)]
@@ -311,7 +311,7 @@ impl Iterator for TokenStream {
 		let tk = Token {
 			ty,
 			value: String::from_utf8(unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) }.to_vec()).unwrap(),
-			location: self.current_location..=self.current_location + len as usize - 1
+			location: self.current_location..self.current_location + len as usize
 		};
 
 		self.current_location += len as usize;

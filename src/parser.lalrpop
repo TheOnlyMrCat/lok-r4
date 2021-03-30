@@ -1,0 +1,145 @@
+use crate::LexError;
+use crate::lexer;
+use crate::codegen::ast;
+
+grammar;
+
+extern {
+	type Location = usize;
+	type Error = LexError;
+
+	enum lexer::Token {
+		ID => lexer::Token::Identifier(<String>),
+		INT => lexer::Token::Integer(<String>),
+		FLOAT => lexer::Token::Float(<String>),
+
+		STRING => lexer::Token::LokStaticString(<String>),
+		HSTRING => lexer::Token::LokHeapString(<String>),
+		CSTRING => lexer::Token::CStaticString(<String>),
+		CHSTRING => lexer::Token::CHeapString(<String>),
+		BSTRING => lexer::Token::ByteStaticString(<String>),
+		BHSTRING => lexer::Token::ByteHeapString(<String>),
+
+		"let" => lexer::Token::Let,
+		"const" => lexer::Token::Const,
+		"mut" => lexer::Token::Mut,
+		"dyn" => lexer::Token::Dyn,
+		"fn" => lexer::Token::Fn,
+		"extern" => lexer::Token::Extern,
+		"return" => lexer::Token::Return,
+		"yield" => lexer::Token::Yield,
+		"if" => lexer::Token::If,
+		"else" => lexer::Token::Else,
+		"static" => lexer::Token::Static,
+		"entry" => lexer::Token::Entry,
+
+		"(" => lexer::Token::OpenPar,
+		")" => lexer::Token::ClosePar,
+		"{" => lexer::Token::OpenBrace,
+		"}" => lexer::Token::CloseBrace,
+		"[" => lexer::Token::OpenBracket,
+		"]" => lexer::Token::CloseBracket,
+		":" => lexer::Token::Colon,
+		"::" => lexer::Token::DblColon,
+		";" => lexer::Token::Semicolon,
+		"." => lexer::Token::Dot,
+		"..." => lexer::Token::TplDot,
+		"," => lexer::Token::Comma,
+		"+" => lexer::Token::Plus,
+		"-" => lexer::Token::Hyphen,
+		"*" => lexer::Token::Star,
+		"/" => lexer::Token::Slash,
+		"%" => lexer::Token::Percent,
+		"=" => lexer::Token::Equals,
+		">" => lexer::Token::Greater,
+		"<" => lexer::Token::Less,
+
+		"->" => lexer::Token::SingleArrow,
+		"=>" => lexer::Token::DoubleArrow,
+	}
+}
+
+pub LokFile: Vec<ast::TopLevelDecl> = {
+	<TopLevelDecl*> => <>
+}
+
+TopLevelDecl: ast::TopLevelDecl = {
+	"extern" "fn" <name:ID> "(" <params:Comma<(ID? Type)>> <varadic:"..."?> ")" <returns:("->" <Type>)?> ";" => {
+		ast::TopLevelDecl::FnExtern(ast::FnExtern {
+			name,
+			params,
+			varadic: varadic.is_some(),
+			returns,
+		})
+	},
+	<TopLevelDef> => ast::TopLevelDecl::Def(<>),
+}
+
+TopLevelDef: ast::TopLevelDef = {
+	"entry" <returns:("->" <Type>)?> <code:Block> => {
+		ast::TopLevelDef::Entry(ast::Entry {
+			returns, code
+		})
+	},
+}
+
+Block: ast::Block = {
+	"{" <statements:Statement*> <tail:Expression?> "}" => {
+		ast::Block {
+			statements,
+			tail,
+		}
+	},
+}
+
+Statement: ast::Statement = {
+	<Expression> ";" => {
+		ast::Statement::Expression(<>)
+	},
+	"return" <Expression?> ";" => {
+		ast::Statement::Return(<>)
+	},
+}
+
+Expression: ast::Expression = {
+	<CallExpression> => <>,
+}
+
+CallExpression: ast::Expression = {
+	<v:ValueExpression> "(" <p:Comma<Expression>> ")" => ast::Expression::Call(Box::new(v), p),
+	<ValueExpression> => <>,
+}
+
+ValueExpression: ast::Expression = {
+	<INT> => ast::Expression::Int(str::parse(&<>).unwrap()), //TODO: Allow negatives
+	<NSIdent> => ast::Expression::Var(<>),
+	<CSTRING> => ast::Expression::CStringRef(<>[2..<>.len() - 1].to_owned().into_bytes()),
+}
+
+Type: ast::Type = {
+	<NSIdent> => ast::Type::Name(<>),
+	"*" "const" <Type> => ast::Type::PtrConst(Box::new(<>)),
+	"*" "mut" <Type> => ast::Type::PtrMut(Box::new(<>)),
+	"*" "dyn" "const" <Type> => ast::Type::PtrDynConst(Box::new(<>)),
+	"*" "dyn" "mut" <Type> => ast::Type::PtrDynMut(Box::new(<>)),
+	"[" <Type> "]" => ast::Type::Slice(Box::new(<>)),
+	"[" <t:Type> ";" <n:INT> "]" => ast::Type::Arr(Box::new(t), str::parse(&n).unwrap()), //TODO: Add error type for if negative
+	"(" <Type*> ")" => ast::Type::Tuple(<>),
+}
+
+NSIdent: ast::NSIdent = {
+	<mut v:(<ID> "::")*> <e:ID> => {
+		v.push(e);
+		v
+	}
+}
+
+Comma<T>: Vec<T> = {
+	<mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+}

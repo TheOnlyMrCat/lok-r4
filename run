@@ -2,13 +2,14 @@ $opt default_positionals
 
 #- b!
 RUSTFLAGS="-L src/gen"
-make src/gen/liblexer.a
+make
 cargo +nightly build
 #/
 
 #-
 RUSTFLAGS="-L src/gen"
-make src/gen/liblexer.a
+test -f "test/$1.lok"
+make LEXFLAGS=-d
 cargo +nightly run -- "test/$1.lok"
 #/
 

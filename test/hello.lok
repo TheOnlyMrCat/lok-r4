@@ -1,7 +1,10 @@
 extern fn puts(*const c_char) -> c_int;
 extern fn putchar(c_int) -> c_int;
+extern fn printf(*const c_char...) -> c_int;
 
 entry -> i32 {
+	puts(c"@ character should follow: ");
 	putchar(64 /* @ */);
+	printf(c"I do be formatting an %s: %d", c"integer", 64);
 	return 0;
 }

@@ -54,7 +54,12 @@ enum Token {
 	Token_ByteHeapString,
 };
 
+char readHex();
+void extendString();
+
 enum Token stringType;
+uint16_t stringLength; //TODO: Error checking around length of string
+char stringValue[2048];
 %}
 %option noyywrap
 %x STRING
@@ -64,26 +69,19 @@ enum Token stringType;
 "/*" { // Modified from http://dinosaur.compilertools.net/flex/flex_9.html
 	register int c;
 
-	for ( ; ; )
-		{
-		while ( (c = input()) != '*' &&
-				c != EOF )
-			;    /* eat up text of comment */
+	for (;;) {
+		while ((c = input()) != '*' && c != EOF );    /* eat up text of comment */
 
-		if ( c == '*' )
-			{
-			while ( (c = input()) == '*' )
-				;
-			if ( c == '/' )
+		if ( c == '*' ) {
+			while ((c = input()) == '*');
+			if (c == '/')
 				break;    /* found the end */
-			}
-
-		if ( c == EOF )
-			{
+		}
+		if ( c == EOF ) {
 			return Token_Eof; //TODO: use special token
-			}
 		}
 	}
+}
 
 let return Token_Let;
 const return Token_Const;
@@ -103,9 +101,61 @@ entry return Token_Entry;
 "-"?[[:digit:]_]+ return Token_Integer;
 [[:digit:]_]+"."[[:digit:]_]+ return Token_Float;
 
-\"(\\.|[^"\\])*\" return Token_LokStaticString;
-c\"(\\.|[^"\\])*\" return Token_CStaticString;
-b\"(\\.|[^"\\])*\" return Token_ByteStaticString;
+\"  BEGIN STRING; stringLength = 0; stringType = Token_LokStaticString;
+c\" BEGIN STRING; stringLength = 0; stringType = Token_CStaticString;
+b\" BEGIN STRING; stringLength = 0; stringType = Token_ByteStaticString;
+
+<STRING>\" BEGIN INITIAL; return stringType;
+<STRING>[^\"\\]+ extendString();
+<STRING>[^\"\\]+\" extendString(); /* Remove trailing quote */ stringLength--; BEGIN INITIAL; return stringType;
+<STRING>\\ {
+	register char c = input();
+	register char i = 0;
+	switch (c) {
+	case '0':
+		c = 0x0;
+		break;
+	case 'a':
+		c = 0x7;
+		break;
+	case 'b':
+		c = 0x8;
+		break;
+	case 'e':
+		c = 0x1b;
+		break;
+	case 'f':
+		c = 0xc;
+		break;
+	case 'n':
+		c = 0xa;
+		break;
+	case 'r':
+		c = 0xd;
+		break;
+	case 't':
+		c = 0x9;
+		break;
+	case 'v':
+		c = 0xb;
+		break;
+	case 'x':
+		i = readHex();
+		if (i == 0x10) {
+			return Token_Eof; //TODO: special "invalid" token
+		}
+		c = i << 4;
+		i = readHex();
+		if (i == 0x10) {
+			return Token_Eof; //TODO: special "invalid" token
+		}
+		c |= i;
+		break;
+	//TODO: Larger unicode (UTF-8?) characters
+	}
+	stringValue[stringLength] = c;
+	stringLength++;
+}
 
 "(" return Token_OpenPar;
 ")" return Token_ClosePar;
@@ -136,11 +186,30 @@ b\"(\\.|[^"\\])*\" return Token_ByteStaticString;
 %%
 //TODO: Catch-all error token
 
+char readHex() {
+	register char i = input();
+	if (i >= '0' && i <= '9') {
+		return i - '0';
+	} else if (i >= 'A' && i <= 'F') {
+		return i - 'A';
+	} else if (i >= 'a' && i <= 'f') {
+		return i - 'a';
+	}
+	return 0x10;
+}
+
+void extendString() {
+	memcpy(stringValue + stringLength, yytext, yyleng);
+	stringLength += yyleng;
+}
+
+// -------- Rust FFI Interface --------
 struct TokenMeta {
 	enum Token type;
 	uint32_t leng;
 	uint32_t skipped;
 };
+
 
 int set_input(const char *filename) {
 	FILE *file = fopen(filename, "r");
@@ -155,6 +224,7 @@ int set_input(const char *filename) {
 struct TokenMeta next_token() {
 	yy_flex_debug = 1;
 	enum Token tok = yylex();
+	puts("--returning token");
 	struct TokenMeta meta = {
 		.type = tok,
 		.leng = yyleng,

@@ -45,12 +45,12 @@ pub enum Token {
 	Integer(String),
 	Float(String),
 
-	LokStaticString(String),
-	LokHeapString(String),
-	CStaticString(String),
-	CHeapString(String),
-	ByteStaticString(String),
-	ByteHeapString(String),
+	LokStaticString(Vec<u8>),
+	LokHeapString(Vec<u8>),
+	CStaticString(Vec<u8>),
+	CHeapString(Vec<u8>),
+	ByteStaticString(Vec<u8>),
+	ByteHeapString(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,15 +119,15 @@ pub fn lex() -> (Token, u32, u32) {
 	let TokenMeta { token, length, skipped } = unsafe { next_token() };
 	(
 		match token {
-			TokenDiscriminant::Identifier => Token::Identifier(unsafe { get_string() }),
-		    TokenDiscriminant::Integer => Token::Integer(unsafe { get_string() }),
-		    TokenDiscriminant::Float => Token::Float(unsafe { get_string() }),
-		    TokenDiscriminant::LokStaticString => Token::LokStaticString(unsafe { get_string() }),
-		    TokenDiscriminant::LokHeapString => Token::LokHeapString(unsafe { get_string() }),
-		    TokenDiscriminant::CStaticString => Token::CStaticString(unsafe { get_string() }),
-		    TokenDiscriminant::CHeapString => Token::CHeapString(unsafe { get_string() }),
-		    TokenDiscriminant::ByteStaticString => Token::ByteStaticString(unsafe { get_string() }),
-		    TokenDiscriminant::ByteHeapString => Token::ByteHeapString(unsafe { get_string() }),
+			TokenDiscriminant::Identifier => Token::Identifier(unsafe { get_yytext() }),
+		    TokenDiscriminant::Integer => Token::Integer(unsafe { get_yytext() }),
+		    TokenDiscriminant::Float => Token::Float(unsafe { get_yytext() }),
+		    TokenDiscriminant::LokStaticString => Token::LokStaticString(unsafe { get_string_value() }),
+		    TokenDiscriminant::LokHeapString => Token::LokHeapString(unsafe { get_string_value() }),
+		    TokenDiscriminant::CStaticString => Token::CStaticString(unsafe { get_string_value() }),
+		    TokenDiscriminant::CHeapString => Token::CHeapString(unsafe { get_string_value() }),
+		    TokenDiscriminant::ByteStaticString => Token::ByteStaticString(unsafe { get_string_value() }),
+		    TokenDiscriminant::ByteHeapString => Token::ByteHeapString(unsafe { get_string_value() }),
 			
 		    TokenDiscriminant::Eof => Token::Eof,
 		    TokenDiscriminant::Let => Token::Let,
@@ -170,13 +170,19 @@ pub fn lex() -> (Token, u32, u32) {
 	)
 }
 
-unsafe fn get_string() -> String {
+unsafe fn get_yytext() -> String {
 	CStr::from_ptr(yytext).to_str().unwrap().to_owned()
+}
+
+unsafe fn get_string_value() -> Vec<u8> {
+	stringValue[0..stringLength as usize].to_owned()
 }
 
 #[link(name="lexer", link="static")]
 extern "C" {
 	static yytext: *mut c_char;
+	static stringLength: u16;
+	static stringValue: [u8; 2048];
 
 	fn next_token() -> TokenMeta;
 	pub fn set_input(filename: *const c_char) -> c_int;

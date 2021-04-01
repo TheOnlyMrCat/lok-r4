@@ -13,12 +13,12 @@ extern {
 		INT => lexer::Token::Integer(<String>),
 		FLOAT => lexer::Token::Float(<String>),
 
-		STRING => lexer::Token::LokStaticString(<String>),
-		HSTRING => lexer::Token::LokHeapString(<String>),
-		CSTRING => lexer::Token::CStaticString(<String>),
-		CHSTRING => lexer::Token::CHeapString(<String>),
-		BSTRING => lexer::Token::ByteStaticString(<String>),
-		BHSTRING => lexer::Token::ByteHeapString(<String>),
+		STRING => lexer::Token::LokStaticString(<Vec<u8>>),
+		HSTRING => lexer::Token::LokHeapString(<Vec<u8>>),
+		CSTRING => lexer::Token::CStaticString(<Vec<u8>>),
+		CHSTRING => lexer::Token::CHeapString(<Vec<u8>>),
+		BSTRING => lexer::Token::ByteStaticString(<Vec<u8>>),
+		BHSTRING => lexer::Token::ByteHeapString(<Vec<u8>>),
 
 		"let" => lexer::Token::Let,
 		"const" => lexer::Token::Const,
@@ -102,18 +102,31 @@ Statement: ast::Statement = {
 }
 
 Expression: ast::Expression = {
-	<CallExpression> => <>,
+	<SumExpression> => <>,
+}
+
+SumExpression: ast::Expression = {
+	<lhs:SumExpression> "+" <rhs:FactorExpression> => ast::Expression::Add(Box::new(lhs), Box::new(rhs)),
+	<lhs:SumExpression> "-" <rhs:FactorExpression> => ast::Expression::Sub(Box::new(lhs), Box::new(rhs)),
+	<FactorExpression> => <>
+}
+
+FactorExpression: ast::Expression = {
+	<lhs:FactorExpression> "*" <rhs:CallExpression> => ast::Expression::Mul(Box::new(lhs), Box::new(rhs)),
+	<lhs:FactorExpression> "/" <rhs:CallExpression> => ast::Expression::Div(Box::new(lhs), Box::new(rhs)),
+	<lhs:FactorExpression> "%" <rhs:CallExpression> => ast::Expression::Rem(Box::new(lhs), Box::new(rhs)),
+	<CallExpression> => <>
 }
 
 CallExpression: ast::Expression = {
-	<v:ValueExpression> "(" <p:Comma<Expression>> ")" => ast::Expression::Call(Box::new(v), p),
+	<e:CallExpression> "(" <p:Comma<Expression>> ")" => ast::Expression::Call(Box::new(e), p),
 	<ValueExpression> => <>,
 }
 
 ValueExpression: ast::Expression = {
 	<INT> => ast::Expression::Int(str::parse(&<>).unwrap()), //TODO: Allow negatives
 	<NSIdent> => ast::Expression::Var(<>),
-	<CSTRING> => ast::Expression::CStringRef(<>[2..<>.len() - 1].to_owned().into_bytes()),
+	<CSTRING> => ast::Expression::CStringRef(<>),
 }
 
 Type: ast::Type = {

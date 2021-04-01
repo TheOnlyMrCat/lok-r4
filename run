@@ -2,15 +2,20 @@ $opt default_positionals
 
 #- b!
 RUSTFLAGS="-L src/gen"
-make
-cargo +nightly build
+make LEXFLAGS=-d
+cargo build
 #/
 
 #-
 RUSTFLAGS="-L src/gen"
 test -f "test/$1.lok"
 make LEXFLAGS=-d
-cargo +nightly run -- "test/$1.lok"
+cargo run -- "test/$1.lok"
+#/
+
+#lldb
+run ::b!
+lldb target/debug/lok_r4
 #/
 
 #lok

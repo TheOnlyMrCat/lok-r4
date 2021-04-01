@@ -3,8 +3,9 @@ extern fn putchar(c_int) -> c_int;
 extern fn printf(*const c_char...) -> c_int;
 
 entry -> i32 {
-	puts(c"@ character should follow: ");
-	putchar(64 /* @ */);
-	printf(c"I do be formatting an %s: %d", c"integer", 64);
+	puts(c"Hello, world!");
+	putchar(64); // @
+	putchar(10 ); // \n
+	printf(c"%s 6 + 4 * 5 - 4 / 2: %d\n", c"Result of", 6 + 4 * 5 - 4 / 2);
 	return 0;
 }

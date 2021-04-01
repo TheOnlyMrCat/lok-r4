@@ -51,7 +51,15 @@ pub mod ast {
 
 	#[derive(Debug)]
 	pub enum Expression {
+		Add(Box<Expression>, Box<Expression>),
+		Sub(Box<Expression>, Box<Expression>),
+
+		Mul(Box<Expression>, Box<Expression>),
+		Div(Box<Expression>, Box<Expression>),
+		Rem(Box<Expression>, Box<Expression>),
+
 		Call(Box<Expression>, Vec<Expression>),
+
 		Var(NSIdent),
 		Int(u64),
 		CStringRef(Vec<u8>),
@@ -130,10 +138,18 @@ pub mod lir {
 	}
 
 	pub enum ExpressionValue {
+		Add(Box<Expression>, Box<Expression>),
+		Sub(Box<Expression>, Box<Expression>),
+
+		Mul(Box<Expression>, Box<Expression>),
+		Div(Box<Expression>, Box<Expression>),
+		Rem(Box<Expression>, Box<Expression>),
+		
 		CallConcrete(Ident, Vec<Expression>),
+
 		Load(Ident),
 		ConstInt(u64),
-		ConstStr(usize),
+		ConstStr(usize /* Index into global string pool */),
 	}
 
 	pub struct Decl {
@@ -250,6 +266,36 @@ pub mod lir {
 	impl Expression {
 		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<Expression, LIRError> {
 			Ok(match expression {
+			    ast::Expression::Add(lhs, rhs) => {
+					Expression {
+						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						value: ExpressionValue::Add(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					}
+				},
+			    ast::Expression::Sub(lhs, rhs) => {
+					Expression {
+						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						value: ExpressionValue::Sub(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					}
+				},
+			    ast::Expression::Mul(lhs, rhs) => {
+					Expression {
+						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						value: ExpressionValue::Mul(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					}
+				},
+			    ast::Expression::Div(lhs, rhs) => {
+					Expression {
+						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						value: ExpressionValue::Div(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					}
+				},
+			    ast::Expression::Rem(lhs, rhs) => {
+					Expression {
+						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						value: ExpressionValue::Rem(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					}
+				},
 				ast::Expression::Call(f, a) => {
 					match *f {
 						ast::Expression::Var(n) => {
@@ -537,6 +583,11 @@ impl Compiler {
 
 	fn compile_expr<'ctx>(&'ctx self, expr: lir::ExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> Option<BasicValueEnum<'ctx>> {
 		match expr {
+			lir::ExpressionValue::Add(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_add(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+			lir::ExpressionValue::Sub(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_sub(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "subtmp"))),
+			lir::ExpressionValue::Mul(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_mul(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "multmp"))),
+			lir::ExpressionValue::Div(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_signed_div(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "divtmp"))),//TODO: Unsigned as well
+			lir::ExpressionValue::Rem(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_signed_rem(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "remtmp"))),//TODO: Unsigned as well
 			lir::ExpressionValue::CallConcrete(id, args) => {
 				let callee = module.get_function(&id.fn_mangle()).expect("Undefined reference to function");
 				let arguments = args.into_iter().map(|expr| self.compile_expr(expr.value, pointers, global_pool, module, fn_value, builder)).collect::<Option<Vec<_>>>()?;

@@ -229,7 +229,6 @@ pub mod lir {
 					ast::TopLevelDecl::Def(def) => {
 						defs.push(def);
 					}
-					_ => {}
 				}
 			}
 
@@ -237,7 +236,7 @@ pub mod lir {
 
 			name_resolve.local_fns = extern_fns.iter().map(|decl| (decl.id.clone(), decl)).collect::<HashMap<_, _>>(); //TODO
 
-			let mut defs_fn = vec![];
+			let defs_fn = vec![];
 			let mut entry = None;
 			for def in defs {
 				match def {
@@ -310,7 +309,7 @@ pub mod lir {
 	}
 
 	impl LExpression {
-		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<LExpression, LIRError> {
+		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, _consts: &mut Constants) -> Result<LExpression, LIRError> {
 			Ok(match expression {
 				ast::Expression::LVar(i) => {
 					let Decl { ty, name, mutable, ..} = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
@@ -423,7 +422,7 @@ pub mod lir {
 		}
 	}
 
-	fn integer_type_for_value(value: u64) -> Type {
+	fn integer_type_for_value(_value: u64) -> Type {
 		Type::Name(Ident::UnmangledItem("i32".to_owned())) //TODO
 	}
 }
@@ -484,8 +483,7 @@ use inkwell::{AddressSpace, OptimizationLevel};
 
 pub struct Compiler {
 	llvm: Context,
-	target: Target,
-	machine: TargetMachine,
+	target: TargetMachine,
 }
 
 impl Compiler {
@@ -507,8 +505,7 @@ impl Compiler {
 		let machine = target.create_target_machine(&triple, "generic", &TargetMachine::get_host_cpu_features().to_string(), OptimizationLevel::None, RelocMode::Default, CodeModel::Default).unwrap();
 		Compiler {
 			llvm: context,
-			target,
-			machine,
+			target: machine,
 		}
 	}
 
@@ -517,18 +514,18 @@ impl Compiler {
 	}
 
 	pub fn write_module(&self, module: &Module<'_>, file_name: impl AsRef<std::path::Path>) {
-		self.machine.write_to_file(module, FileType::Object, file_name.as_ref()).unwrap();
+		self.target.write_to_file(module, FileType::Object, file_name.as_ref()).unwrap();
 	}
 	
 	pub fn compile_lir_module(&self, module: lir::Module) -> Module<'_> {
 		let llvm_module = self.llvm.create_module(&module.name.mod_mangle());
-		llvm_module.set_data_layout(&self.machine.get_target_data().get_data_layout());
-		llvm_module.set_triple(&self.machine.get_triple());
+		llvm_module.set_data_layout(&self.target.get_target_data().get_data_layout());
+		llvm_module.set_triple(&self.target.get_triple());
 
 		for decl in module.extern_fns {
 			let params = decl.params.iter().map(|(_, ty)| self.get_type(ty)).collect::<Vec<_>>();
 			let varadic = decl.varadic;
-			let function = llvm_module.add_function(
+			let _function = llvm_module.add_function(
 				&decl.id.fn_mangle(),
 				decl.returns.map(|x| self.get_type(&x).fn_type(&params, varadic)).unwrap_or(self.llvm.void_type().fn_type(&params, false)),
 				Some(Linkage::External),
@@ -566,7 +563,7 @@ impl Compiler {
 		match ty {
 			lir::Type::PtrConst(t) | lir::Type::PtrMut(t) => self.get_type(&t).ptr_type(AddressSpace::Generic).into(),
 			lir::Type::PtrDynConst(t) | lir::Type::PtrDynMut(t) => self.llvm.struct_type(&[
-				self.llvm.ptr_sized_int_type(&self.machine.get_target_data(), None).into(),
+				self.llvm.ptr_sized_int_type(&self.target.get_target_data(), None).into(),
 				self.get_type(&t).ptr_type(AddressSpace::Generic).into()
 			], false).into(),
 			lir::Type::Arr(..) => todo!(),
@@ -584,10 +581,10 @@ impl Compiler {
 							"c_char" => self.llvm.i8_type().into(),
 							"c_short" => self.llvm.i16_type().into(), // ILP32, LLP64, LP64
 							"c_int" => self.llvm.i32_type().into(), // ILP32, LLP64, LP64
-							"c_long" => if self.machine.get_triple().as_str().to_bytes().split(|&b| b == b'-').skip(2).next().unwrap() == b"windows" {
+							"c_long" => if self.target.get_triple().as_str().to_bytes().split(|&b| b == b'-').skip(2).next().unwrap() == b"windows" {
 								self.llvm.i32_type().into() // ILP32, LLP64 (Windows APIs)
 							} else {
-								self.llvm.ptr_sized_int_type(&self.machine.get_target_data(), None).into() // ILP32, LP64 (Unix APIs)
+								self.llvm.ptr_sized_int_type(&self.target.get_target_data(), None).into() // ILP32, LP64 (Unix APIs)
 							}
 							"c_longlong" => self.llvm.i64_type().into(),
 							_ => todo!(),
@@ -687,7 +684,7 @@ impl Compiler {
 		}
 	}
 
-	fn compile_lexpr<'ctx>(&'ctx self, expr: lir::LExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> PointerValue<'ctx> {
+	fn compile_lexpr<'ctx>(&'ctx self, expr: lir::LExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, _global_pool: &GlobalPool<'ctx>, _module: &Module<'ctx>, _fn_value: FunctionValue<'ctx>, _builder: &Builder<'ctx>) -> PointerValue<'ctx> {
 		match expr {
 			lir::LExpressionValue::Var(ident) => match ident {
 				lir::Ident::Local(_) => pointers.get(&ident.local_mangle()).expect("Local variable should have been declared").clone(),

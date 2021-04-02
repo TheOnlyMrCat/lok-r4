@@ -26,7 +26,8 @@ struct Lexer {
 
 impl Lexer {
 	fn new(path: &str) -> std::io::Result<Lexer> {
-		let errno = unsafe { lexer::set_input(CString::new(path).unwrap().as_ptr()) };
+		// SAFETY: C String doesn't need to live longer than this function, so it's fine for it to be temporary
+		let errno = unsafe { lexer::set_input(#[allow(temporary_cstring_as_ptr)] CString::new(path).unwrap().as_ptr()) };
 		if errno > 0 {
 			Err(std::io::Error::from_raw_os_error(errno))?
 		}

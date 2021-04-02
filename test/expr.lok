@@ -1,0 +1,12 @@
+extern fn puts(*const c_char) -> c_int;
+extern fn putchar(c_int) -> c_int;
+extern fn printf(*const c_char...) -> c_int;
+
+entry {
+	let at = 64;
+	putchar(at);
+	putchar(10);
+	let mut calc = 6 + 7 - 5 * 4 + 4;
+	calc = calc + 4 / 2;
+	printf(c"%s 6 + 7 - 5 * 4 + 4 + 4 / 2 = %d\n", c"Calculation:", calc);
+}

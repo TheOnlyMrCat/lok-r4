@@ -53,6 +53,7 @@ pub enum Token {
 	ByteHeapString(Vec<u8>),
 }
 
+#[allow(dead_code)] // The items are constructed by the next_token function, which rust cannot see
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum TokenDiscriminant {

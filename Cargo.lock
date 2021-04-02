@@ -103,7 +103,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lok_r4"
+name = "lok"
 version = "0.1.0"
 dependencies = [
  "inkwell",

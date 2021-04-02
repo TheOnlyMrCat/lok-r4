@@ -96,25 +96,38 @@ Statement: ast::Statement = {
 	<Expression> ";" => {
 		ast::Statement::Expression(<>)
 	},
+	"let" <m:"mut"?> <n:ID> <t:(":" <Type>)?> "=" <e:Expression> ";" => {
+		ast::Statement::Decl {
+			name: n,
+			mutable: m.is_some(),
+			expected_type: t,
+			value: e,
+		}
+	},
 	"return" <Expression?> ";" => {
 		ast::Statement::Return(<>)
 	},
 }
 
 Expression: ast::Expression = {
+	<AssignExpression> => <>,
+}
+
+AssignExpression: ast::Expression = {
+	<lhs:LValueExpression> "=" <rhs:SumExpression> => ast::Expression::Assign(Box::new(lhs), None, Box::new(rhs)),
 	<SumExpression> => <>,
 }
 
 SumExpression: ast::Expression = {
-	<lhs:SumExpression> "+" <rhs:FactorExpression> => ast::Expression::Add(Box::new(lhs), Box::new(rhs)),
-	<lhs:SumExpression> "-" <rhs:FactorExpression> => ast::Expression::Sub(Box::new(lhs), Box::new(rhs)),
+	<lhs:SumExpression> "+" <rhs:FactorExpression> => ast::Expression::Op(ast::Op::Add, Box::new(lhs), Box::new(rhs)),
+	<lhs:SumExpression> "-" <rhs:FactorExpression> => ast::Expression::Op(ast::Op::Sub, Box::new(lhs), Box::new(rhs)),
 	<FactorExpression> => <>
 }
 
 FactorExpression: ast::Expression = {
-	<lhs:FactorExpression> "*" <rhs:CallExpression> => ast::Expression::Mul(Box::new(lhs), Box::new(rhs)),
-	<lhs:FactorExpression> "/" <rhs:CallExpression> => ast::Expression::Div(Box::new(lhs), Box::new(rhs)),
-	<lhs:FactorExpression> "%" <rhs:CallExpression> => ast::Expression::Rem(Box::new(lhs), Box::new(rhs)),
+	<lhs:FactorExpression> "*" <rhs:CallExpression> => ast::Expression::Op(ast::Op::Mul, Box::new(lhs), Box::new(rhs)),
+	<lhs:FactorExpression> "/" <rhs:CallExpression> => ast::Expression::Op(ast::Op::Div, Box::new(lhs), Box::new(rhs)),
+	<lhs:FactorExpression> "%" <rhs:CallExpression> => ast::Expression::Op(ast::Op::Rem, Box::new(lhs), Box::new(rhs)),
 	<CallExpression> => <>
 }
 
@@ -125,8 +138,13 @@ CallExpression: ast::Expression = {
 
 ValueExpression: ast::Expression = {
 	<INT> => ast::Expression::Int(str::parse(&<>).unwrap()), //TODO: Allow negatives
-	<NSIdent> => ast::Expression::Var(<>),
+	<LValueExpression> => <>,
 	<CSTRING> => ast::Expression::CStringRef(<>),
+	"(" <Expression> ")" => <>,
+}
+
+LValueExpression: ast::Expression = {
+	<NSIdent> => ast::Expression::LVar(<>),
 }
 
 Type: ast::Type = {

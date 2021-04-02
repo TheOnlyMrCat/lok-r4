@@ -7,5 +7,9 @@ pub struct LIRError {
 
 #[derive(Debug)]
 pub enum LIRErrorType {
-	UnresolvedIdent
+	UnresolvedIdent,
+	MismatchedTypes,
+	VoidValue,
+	InvalidLValueExpr,
+	ImmutAssign,
 }

@@ -15,7 +15,9 @@ fn main() {
 	let decls = parser::LokFileParser::new().parse(lexer).unwrap();
 	let module = codegen::lir::Module::from_ast(codegen::lir::Ident::UnmangledItem("Dunno".to_owned()), decls);
 	let compiler = codegen::Compiler::new();
-	compiler.write_module(&compiler.compile_lir_module(module.unwrap()), "todo.o");
+	let compiled_mod = compiler.compile_lir_module(module.unwrap());
+	compiler.print_ir(&compiled_mod, "todo.ll");
+	compiler.write_module(&compiled_mod, "todo.o");
 }
 
 struct Lexer {

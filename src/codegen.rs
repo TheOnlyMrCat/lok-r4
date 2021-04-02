@@ -1,4 +1,6 @@
 pub mod ast {
+	use super::lir;
+
 	#[derive(Debug)]
 	pub enum TopLevelDecl {
 		FnExtern(FnExtern),
@@ -45,22 +47,27 @@ pub mod ast {
 
 	#[derive(Debug)]
 	pub enum Statement {
+		Decl {
+			name: Ident,
+			mutable: bool,
+			expected_type: Option<Type>,
+			value: Expression,
+		},
 		Expression(Expression),
 		Return(Option<Expression>),
 	}
 
+	pub type Op = lir::Op;
+
 	#[derive(Debug)]
 	pub enum Expression {
-		Add(Box<Expression>, Box<Expression>),
-		Sub(Box<Expression>, Box<Expression>),
+		Assign(Box<Expression>, Option<Op>, Box<Expression>),
 
-		Mul(Box<Expression>, Box<Expression>),
-		Div(Box<Expression>, Box<Expression>),
-		Rem(Box<Expression>, Box<Expression>),
+		Op(Op, Box<Expression>, Box<Expression>),
 
 		Call(Box<Expression>, Vec<Expression>),
 
-		Var(NSIdent),
+		LVar(NSIdent),
 		Int(u64),
 		CStringRef(Vec<u8>),
 	}
@@ -85,7 +92,7 @@ pub mod lir {
 	use crate::error::{LIRError, LIRErrorType};
 
 	use super::ast;
-	use super::NameResolveMap;
+	use super::{NameResolveMap, StackScope};
 
 	pub struct Module {
 		pub name: Ident,
@@ -127,7 +134,7 @@ pub mod lir {
 	}
 
 	pub enum Statement {
-		Decl(Decl, Expression),
+		Decl(String, Expression),
 		Eval(Expression),
 		Return(Option<Expression>),
 	}
@@ -137,28 +144,46 @@ pub mod lir {
 		pub value: ExpressionValue
 	}
 
-	pub enum ExpressionValue {
-		Add(Box<Expression>, Box<Expression>),
-		Sub(Box<Expression>, Box<Expression>),
+	pub struct LExpression {
+		pub ty: Type,
+		pub mutable: bool,
+		pub value: LExpressionValue,
+	}
 
-		Mul(Box<Expression>, Box<Expression>),
-		Div(Box<Expression>, Box<Expression>),
-		Rem(Box<Expression>, Box<Expression>),
+	#[derive(Debug, Clone, Copy)]
+	pub enum Op {
+		Add,
+		Sub,
+		Mul,
+		Div,
+		Rem,
+
+	}
+
+	pub enum ExpressionValue {
+		Assign(Option<Op>, LExpression, Box<Expression>),
+
+		Op(Op, Box<Expression>, Box<Expression>),
 		
 		CallConcrete(Ident, Vec<Expression>),
 
-		Load(Ident),
+		LExpr(LExpression),
 		ConstInt(u64),
 		ConstStr(usize /* Index into global string pool */),
 	}
 
+	pub enum LExpressionValue {
+		Var(Ident),
+	}
+
+	#[derive(Clone, Debug)]
 	pub struct Decl {
+		pub name: Ident,
 		pub mutable: bool,
-		pub name: String,
 		pub ty: Type,
 	}
 
-	#[derive(Debug, Clone)]
+	#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 	pub enum Type {
 		Name(Ident),
 		PtrConst(Box<Type>),
@@ -241,6 +266,8 @@ pub mod lir {
 		fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<FnBody, LIRError> {
 			let mut decls = vec![];
 			let mut statements = vec![];
+
+			name_resolve.scope_stack.push(StackScope::default());
 	
 			for statement in block.statements {
 				match statement {
@@ -250,15 +277,50 @@ pub mod lir {
 					ast::Statement::Return(e) => {
 						statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, consts)).transpose()?))
 					}
+				    ast::Statement::Decl { name, mutable, expected_type, value } => {
+						let expr = Expression::from_ast(value, name_resolve, consts)?;
+						let ty = expr.ty.clone().ok_or(LIRError { ty: LIRErrorType::VoidValue })?;
+						if let Some(expected) = expected_type {
+							if Type::from_ast(expected, name_resolve)? != ty {
+								return Err(LIRError { ty: LIRErrorType::MismatchedTypes });
+							}
+						}
+						let decl = Decl {
+							name: Ident::Local(name.clone()),
+							mutable,
+							ty,
+						};
+						decls.push(decl.clone());
+						name_resolve.scope_stack.last_mut().expect("One was pushed on earlier").vars.insert(name.clone(), decl.clone());
+						statements.push(Statement::Decl(name, expr));
+					}
 				}
 			}
+
+			let block = Block {
+				statements,
+				tail: block.tail.map(|expr| Expression::from_ast(expr, name_resolve, consts)).transpose()?,
+			};
 	
 			Ok(FnBody {
 				decls,
-				block: Block {
-					statements,
-					tail: block.tail.map(|expr| Expression::from_ast(expr, name_resolve, consts)).transpose()?,
-				}
+				block,
+			})
+		}
+	}
+
+	impl LExpression {
+		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<LExpression, LIRError> {
+			Ok(match expression {
+				ast::Expression::LVar(i) => {
+					let Decl { ty, name, mutable, ..} = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
+					LExpression {
+						ty,
+						mutable,
+						value: LExpressionValue::Var(name),
+					}
+				},
+				_ => Err(LIRError { ty: LIRErrorType::InvalidLValueExpr })?
 			})
 		}
 	}
@@ -266,39 +328,26 @@ pub mod lir {
 	impl Expression {
 		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<Expression, LIRError> {
 			Ok(match expression {
-			    ast::Expression::Add(lhs, rhs) => {
+				ast::Expression::Assign(lhs, op, rhs) => {
+					let lvalue = LExpression::from_ast(*lhs, name_resolve, consts)?;
+					if !lvalue.mutable {
+						Err(LIRError { ty: LIRErrorType::ImmutAssign })?;
+					}
+					let rvalue = Expression::from_ast(*rhs, name_resolve, consts)?;
 					Expression {
-						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
-						value: ExpressionValue::Add(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+						ty: Some(lvalue.ty.clone()),
+						value: ExpressionValue::Assign(op, lvalue, Box::new(rvalue))
 					}
 				},
-			    ast::Expression::Sub(lhs, rhs) => {
+			    ast::Expression::Op(op, lhs, rhs) => {
 					Expression {
 						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
-						value: ExpressionValue::Sub(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
-					}
-				},
-			    ast::Expression::Mul(lhs, rhs) => {
-					Expression {
-						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
-						value: ExpressionValue::Mul(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
-					}
-				},
-			    ast::Expression::Div(lhs, rhs) => {
-					Expression {
-						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
-						value: ExpressionValue::Div(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
-					}
-				},
-			    ast::Expression::Rem(lhs, rhs) => {
-					Expression {
-						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
-						value: ExpressionValue::Rem(Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+						value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
 					}
 				},
 				ast::Expression::Call(f, a) => {
 					match *f {
-						ast::Expression::Var(n) => {
+						ast::Expression::LVar(n) => {
 							let (ty, ident) = name_resolve.resolve_fn_default(n).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
 							Expression {
 								ty,
@@ -306,13 +355,6 @@ pub mod lir {
 							}
 						},
 						_ => todo!(),
-					}
-				},
-				ast::Expression::Var(i) => {
-					let (ty, ident) = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
-					Expression {
-						ty: Some(ty),
-						value: ExpressionValue::Load(ident),
 					}
 				},
 				ast::Expression::Int(i) => {
@@ -327,7 +369,14 @@ pub mod lir {
 						ty: Some(Type::PtrConst(Box::new(Type::Name(Ident::UnmangledItem("c_char".to_owned()))))),
 						value: ExpressionValue::ConstStr(consts.strings.len() - 1),
 					}
-				}
+				},
+				ast::Expression::LVar(_) => {
+					let lexpr = LExpression::from_ast(expression, name_resolve, consts)?;
+					Expression {
+						ty: Some(lexpr.ty.clone()),
+						value: ExpressionValue::LExpr(lexpr),
+					}
+				},
 			})
 		}
 	}
@@ -365,6 +414,13 @@ pub mod lir {
 		pub fn mod_mangle(&self) -> String {
 			"TODO".to_owned() //TODO
 		}
+
+		pub fn local_mangle(&self) -> String {
+			match self {
+				Ident::Local(s) => s.clone(),
+				_ => panic!("Attempted to mangle incompatible id as local"),
+			}
+		}
 	}
 
 	fn integer_type_for_value(value: u64) -> Type {
@@ -374,13 +430,14 @@ pub mod lir {
 
 use std::collections::HashMap;
 
-struct StackScope<'a> {
-	vars: HashMap<lir::Ident, &'a lir::Decl>,
+#[derive(Default)]
+struct StackScope {
+	vars: HashMap<String, lir::Decl>,
 }
 
 struct NameResolveMap<'a> {
 	local_fns: HashMap<lir::Ident, &'a lir::ExternFn>,
-	scope_stack: Vec<StackScope<'a>>,
+	scope_stack: Vec<StackScope>,
 }
 
 impl NameResolveMap<'_> {
@@ -392,8 +449,19 @@ impl NameResolveMap<'_> {
 		}
 	}
 
-	fn resolve_var_default(&self, name: Vec<String>) -> Option<(lir::Type, lir::Ident)> {
-		None
+	fn resolve_var_default(&self, name: Vec<String>) -> Option<lir::Decl> {
+		if name.len() == 1 {
+			let mut found = None;
+			for scope in self.scope_stack.iter().rev() {
+				if let Some(decl) = scope.vars.get(&name[0]) {
+					found = Some(decl.clone());
+					break;
+				}
+			}
+			found
+		} else {
+			None
+		}
 	}
 
 	fn resolve_typename_default(&self, name: Vec<String>) -> Option<lir::Ident> {
@@ -436,14 +504,16 @@ impl Compiler {
 		});
 		let triple = TargetMachine::get_default_triple();
 		let target = Target::from_triple(&triple).unwrap();
-		println!("triple: {}", triple);
-		println!("features: {}", &TargetMachine::get_host_cpu_features().to_string());
 		let machine = target.create_target_machine(&triple, "generic", &TargetMachine::get_host_cpu_features().to_string(), OptimizationLevel::None, RelocMode::Default, CodeModel::Default).unwrap();
 		Compiler {
 			llvm: context,
 			target,
 			machine,
 		}
+	}
+
+	pub fn print_ir(&self, module: &Module<'_>, file_name: impl AsRef<std::path::Path>) {
+		module.print_to_file(file_name).unwrap();
 	}
 
 	pub fn write_module(&self, module: &Module<'_>, file_name: impl AsRef<std::path::Path>) {
@@ -536,8 +606,9 @@ impl Compiler {
 
 		let mut pointers = HashMap::<String, PointerValue<'ctx>>::new();
 
-		for decl in body.decls {
-			pointers.insert(decl.name, builder.build_alloca(self.get_type(&decl.ty), "var"));
+		for decl in &body.decls {
+			let name = decl.name.local_mangle();
+			pointers.insert(name.clone(), builder.build_alloca(self.get_type(&decl.ty), &name));
 		}
 
 		builder.build_unconditional_branch(self.compile_block(body.block, "entry", &pointers, global_pool, module, fn_value));
@@ -570,7 +641,12 @@ impl Compiler {
 						}
 					}
 				},
-				lir::Statement::Decl(..) => todo!(),
+				lir::Statement::Decl(name, expr) => {
+					builder.build_store(
+						pointers.get(&name).expect("All decl statements are given pointers").clone(),
+						self.compile_expr(expr.value, pointers, global_pool, module, fn_value, &builder).expect("Type was checked by LIR")
+					);
+				},
 			}
 		}
 
@@ -583,11 +659,23 @@ impl Compiler {
 
 	fn compile_expr<'ctx>(&'ctx self, expr: lir::ExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> Option<BasicValueEnum<'ctx>> {
 		match expr {
-			lir::ExpressionValue::Add(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_add(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
-			lir::ExpressionValue::Sub(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_sub(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "subtmp"))),
-			lir::ExpressionValue::Mul(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_mul(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "multmp"))),
-			lir::ExpressionValue::Div(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_signed_div(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "divtmp"))),//TODO: Unsigned as well
-			lir::ExpressionValue::Rem(lhs, rhs) => Some(BasicValueEnum::IntValue(builder.build_int_signed_rem(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "remtmp"))),//TODO: Unsigned as well
+		    lir::ExpressionValue::Assign(op, lhs, rhs) => {
+				let val = match op {
+					Some(_) => todo!(),
+					None => self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder),
+				};
+				builder.build_store(self.compile_lexpr(lhs.value, pointers, global_pool, module, fn_value, builder), val.expect("Type was checked by LIR"));
+				val
+			}
+			lir::ExpressionValue::Op(op, lhs, rhs) => {
+				match op {
+					lir::Op::Add => Some(BasicValueEnum::IntValue(builder.build_int_add(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+					lir::Op::Sub => Some(BasicValueEnum::IntValue(builder.build_int_sub(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+					lir::Op::Mul => Some(BasicValueEnum::IntValue(builder.build_int_mul(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+					lir::Op::Div => Some(BasicValueEnum::IntValue(builder.build_int_signed_div(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+					lir::Op::Rem => Some(BasicValueEnum::IntValue(builder.build_int_signed_rem(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder)?.into_int_value(), "addtmp"))),
+				}
+			}
 			lir::ExpressionValue::CallConcrete(id, args) => {
 				let callee = module.get_function(&id.fn_mangle()).expect("Undefined reference to function");
 				let arguments = args.into_iter().map(|expr| self.compile_expr(expr.value, pointers, global_pool, module, fn_value, builder)).collect::<Option<Vec<_>>>()?;
@@ -595,7 +683,16 @@ impl Compiler {
 			},
 			lir::ExpressionValue::ConstInt(val) => Some(BasicValueEnum::IntValue(self.llvm.i32_type().const_int(val as u64, true))),
 			lir::ExpressionValue::ConstStr(i) => Some(BasicValueEnum::PointerValue(global_pool.strings[i].as_pointer_value())), //TODO: Caching?
-			lir::ExpressionValue::Load(_) => todo!(),
+			lir::ExpressionValue::LExpr(lexpr) => Some(builder.build_load(self.compile_lexpr(lexpr.value, pointers, global_pool, module, fn_value, builder), "loadtmp")),
+		}
+	}
+
+	fn compile_lexpr<'ctx>(&'ctx self, expr: lir::LExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>, builder: &Builder<'ctx>) -> PointerValue<'ctx> {
+		match expr {
+			lir::LExpressionValue::Var(ident) => match ident {
+				lir::Ident::Local(_) => pointers.get(&ident.local_mangle()).expect("Local variable should have been declared").clone(),
+				_ => todo!(),
+			}
 		}
 	}
 }

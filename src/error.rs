@@ -9,6 +9,7 @@ pub struct LIRError {
 pub enum LIRErrorType {
 	UnresolvedIdent,
 	MismatchedTypes,
+	ArgCountMismatch,
 	VoidValue,
 	InvalidLValueExpr,
 	ImmutAssign,

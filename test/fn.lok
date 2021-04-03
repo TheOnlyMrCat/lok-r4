@@ -1,0 +1,11 @@
+extern fn printf(*const c_char...) -> c_int;
+
+entry {
+	let secret_code = 1963735235;
+	printf(c"Wow so secret: %d\n", fetch_secret_number(secret_code));
+}
+
+fn fetch_secret_number(code: i32) -> i32 {
+	// We don't actually check the code, because I don't have if expressions yet...
+	return 3584056772; // Technically this will make it negative but shh
+}

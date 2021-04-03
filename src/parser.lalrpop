@@ -64,7 +64,7 @@ pub LokFile: Vec<ast::TopLevelDecl> = {
 }
 
 TopLevelDecl: ast::TopLevelDecl = {
-	"extern" "fn" <name:ID> "(" <params:Comma<(ID? Type)>> <varadic:"..."?> ")" <returns:("->" <Type>)?> ";" => {
+	"extern" "fn" <name:ID> "(" <params:Comma<((<ID> ":")? Type)>> <varadic:"..."?> ")" <returns:("->" <Type>)?> ";" => {
 		ast::TopLevelDecl::FnExtern(ast::FnExtern {
 			name,
 			params,
@@ -76,11 +76,24 @@ TopLevelDecl: ast::TopLevelDecl = {
 }
 
 TopLevelDef: ast::TopLevelDef = {
-	"entry" <returns:("->" <Type>)?> <code:Block> => {
+	"entry" <returns:("->" <Type>)?> <body:Block> => {
 		ast::TopLevelDef::Entry(ast::Entry {
-			returns, code
+			returns,
+			body
 		})
 	},
+	<Def> => ast::TopLevelDef::Def(<>),
+}
+
+Def: ast::Def = {
+	"fn" <name:ID> "(" <params:Comma<((<ID> ":") Type)>> ")" <returns:("->" <Type>)?> <body:Block> => {
+		ast::Def::Fn(ast::FnDef {
+			name,
+			params,
+			returns,
+			body,
+		})
+	}
 }
 
 Block: ast::Block = {

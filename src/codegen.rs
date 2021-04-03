@@ -31,12 +31,13 @@ pub mod ast {
 		pub name: Ident,
 		pub params: Vec<(Ident, Type)>,
 		pub returns: Option<Type>,
+		pub body: Block,
 	}
 
 	#[derive(Debug)]
 	pub struct Entry {
 		pub returns: Option<Type>,
-		pub code: Block,
+		pub body: Block,
 	}
 
 	#[derive(Debug)]
@@ -94,56 +95,66 @@ pub mod lir {
 	use super::ast;
 	use super::{NameResolveMap, StackScope};
 
+	#[derive(Debug)]
 	pub struct Module {
 		pub name: Ident,
-		pub extern_fns: Vec<ExternFn>,
-		pub defs_fn: Vec<DefFn>,
+		pub fn_decls: Vec<DeclFn>,
+		pub fn_defs: Vec<DefFn>,
 		pub consts: Constants,
 		pub entry: Option<DefEntry>,
 	}
 
+	#[derive(Debug)]
 	pub struct Constants {
 		pub strings: Vec<(Vec<u8>, bool)>,
 	}
 
-	pub struct ExternFn {
+	#[derive(Clone, Debug)]
+	pub struct DeclFn {
 		pub id: Ident,
 		pub params: Vec<(String, Type)>,
 		pub varadic: bool,
 		pub returns: Option<Type>,
 	}
 
+	#[derive(Debug)]
 	pub struct DefFn {
 		pub id: Ident,
 		pub body: FnBody,
 	}
 
+	#[derive(Debug)]
 	pub struct DefEntry {
 		pub returns: Option<Type>,
 		pub body: FnBody,
 	}
 
+	#[derive(Debug)]
 	pub struct FnBody {
 		pub decls: Vec<Decl>,
 		pub block: Block,
 	}
 
+	#[derive(Debug)]
 	pub struct Block {
 		pub statements: Vec<Statement>,
 		pub tail: Option<Expression>,
 	}
 
+	#[derive(Debug)]
 	pub enum Statement {
 		Decl(String, Expression),
 		Eval(Expression),
 		Return(Option<Expression>),
 	}
 
+	#[derive(Debug)]
 	pub struct Expression {
 		pub ty: Option<Type>,
 		pub value: ExpressionValue
 	}
 
+	#[derive(Debug)]
 	pub struct LExpression {
 		pub ty: Type,
 		pub mutable: bool,
@@ -160,6 +171,7 @@ pub mod lir {
 
 	}
 
+	#[derive(Debug)]
 	pub enum ExpressionValue {
 		Assign(Option<Op>, LExpression, Box<Expression>),
 
@@ -172,6 +184,7 @@ pub mod lir {
 		ConstStr(usize /* Index into global string pool */),
 	}
 
+	#[derive(Debug)]
 	pub enum LExpressionValue {
 		Var(Ident),
 	}
@@ -185,6 +198,7 @@ pub mod lir {
 
 	#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 	pub enum Type {
+		Primitive(Primitive),
 		Name(Ident),
 		PtrConst(Box<Type>),
 		PtrMut(Box<Type>),
@@ -196,12 +210,29 @@ pub mod lir {
 	}
 
 	#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+	pub enum Primitive {
+		I8,
+		I16,
+		I32,
+		I64,
+		U8,
+		U16,
+		U32,
+		U64,
+		CChar,
+		CShort,
+		CInt,
+		CLong,
+		CLLong,
+	}
+
+	#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 	pub enum Ident {
 		Local(String),
 		UnmangledItem(String),
-		Function(Vec<String>),
-		Static(Vec<String>),
-		Type(Vec<String>),
+		// Function(Vec<String>),
+		// Static(Vec<String>),
+		// Type(Vec<String>),
 	}
 
 	impl Module {
@@ -214,12 +245,12 @@ pub mod lir {
 				strings: vec![],
 			};
 
-			let mut extern_fns = vec![];
+			let mut fn_decls = vec![];
 			let mut defs = vec![];
 			for decl in tl_decls {
 				match decl {
 					ast::TopLevelDecl::FnExtern(f) => {
-						extern_fns.push(ExternFn {
+						fn_decls.push(DeclFn {
 							id: Ident::UnmangledItem(f.name),
 							params: f.params.into_iter().map(|(s, t)| Type::from_ast(t, &mut name_resolve).map(|t| (match s { Some(s) => s.to_owned(), None => "".to_owned() }, t))).collect::<Result<Vec<_>, _>>()?,
 							varadic: f.varadic,
@@ -227,6 +258,17 @@ pub mod lir {
 						})
 					},
 					ast::TopLevelDecl::Def(def) => {
+						match &def {
+							ast::TopLevelDef::Def(ast::Def::Fn(f)) => {
+								fn_decls.push(DeclFn {
+									id: Ident::UnmangledItem(f.name.clone()),
+									params: f.params.iter().cloned().map(|(s, t)| Type::from_ast(t, &mut name_resolve).map(|t| (s, t))).collect::<Result<Vec<_>, _>>()?,
+									varadic: false,
+									returns: f.returns.clone().map(|t| Type::from_ast(t, &mut name_resolve)).transpose()?,
+								})
+							}
+						    _ => {}
+						}
 						defs.push(def);
 					}
 				}
@@ -234,9 +276,27 @@ pub mod lir {
 
 			use std::collections::HashMap;
 
-			name_resolve.local_fns = extern_fns.iter().map(|decl| (decl.id.clone(), decl)).collect::<HashMap<_, _>>(); //TODO
+			name_resolve.local_fns = fn_decls.iter().map(|decl| Ok((decl.id.clone(), decl.clone())))
+				.chain(
+					defs.iter().filter_map(|def| match def {
+						ast::TopLevelDef::Def(ast::Def::Fn(f)) => match f.params.iter().map(|(s, t)| match Type::from_ast(t.clone(), &mut name_resolve) { Ok(t) => Ok((s.clone(), t)), Err(e) => Err(e) }).collect() {
+							Ok(params) => match f.returns.clone().map(|t| Type::from_ast(t, &mut name_resolve)).transpose() {
+								Ok(returns) => Some(Ok((Ident::UnmangledItem(f.name.clone()), DeclFn {
+									id: Ident::UnmangledItem(f.name.clone()),
+									params,
+									varadic: false,
+									returns,
+								}))),
+								Err(e) => Some(Err(e)),
+							},
+							Err(e) => Some(Err(e))
+						}
+						_ => None,
+					})
+				)
+				.collect::<Result<HashMap<_, _>, _>>()?; //TODO
 
-			let defs_fn = vec![];
+			let mut fn_defs = vec![];
 			let mut entry = None;
 			for def in defs {
 				match def {
@@ -244,25 +304,40 @@ pub mod lir {
 						assert!(entry.is_none(), "Multiple entry points declared!"); //TODO: Error type
 						entry = Some(DefEntry {
 							returns: e.returns.map(|t| Type::from_ast(t, &mut name_resolve)).transpose()?,
-							body: FnBody::from_ast(e.code, &mut name_resolve, &mut consts)?,
+							body: FnBody::from_ast(e.body, &mut name_resolve, &mut consts)?,
 						})
 					},
-					_ => {}
+					ast::TopLevelDef::Def(ast::Def::Fn(f)) => {
+						fn_defs.push(DefFn {
+							id: Ident::UnmangledItem(f.name), //TODO
+							body: FnBody::from_ast(f.body, &mut name_resolve, &mut consts)?
+						});
+					}
 				}
 			}
 	
 			Ok(Module {
 				name,
-				extern_fns,
-				defs_fn,
+				fn_decls,
+				fn_defs,
 				consts,
 				entry,
 			})
 		}
+
+		pub fn print_to_file(&self, file_name: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+			use std::fs::File;
+			use std::io::Write;
+
+			let mut out_file = File::create(file_name)?;
+			write!(out_file, "{:#?}", self)?;
+			out_file.flush()?;
+			Ok(())
+		}
 	}
 	
 	impl FnBody {
-		fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<FnBody, LIRError> {
+		fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap, consts: &mut Constants) -> Result<FnBody, LIRError> {
 			let mut decls = vec![];
 			let mut statements = vec![];
 
@@ -277,17 +352,14 @@ pub mod lir {
 						statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, consts)).transpose()?))
 					}
 				    ast::Statement::Decl { name, mutable, expected_type, value } => {
-						let expr = Expression::from_ast(value, name_resolve, consts)?;
-						let ty = expr.ty.clone().ok_or(LIRError { ty: LIRErrorType::VoidValue })?;
+						let mut expr = Expression::from_ast(value, name_resolve, consts)?;
 						if let Some(expected) = expected_type {
-							if Type::from_ast(expected, name_resolve)? != ty {
-								return Err(LIRError { ty: LIRErrorType::MismatchedTypes });
-							}
+							expr = expr.coerce(&Type::from_ast(expected, name_resolve)?).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
 						}
 						let decl = Decl {
 							name: Ident::Local(name.clone()),
 							mutable,
-							ty,
+							ty: expr.ty.clone().ok_or(LIRError { ty: LIRErrorType::VoidValue })?,
 						};
 						decls.push(decl.clone());
 						name_resolve.scope_stack.last_mut().expect("One was pushed on earlier").vars.insert(name.clone(), decl.clone());
@@ -309,7 +381,7 @@ pub mod lir {
 	}
 
 	impl LExpression {
-		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, _consts: &mut Constants) -> Result<LExpression, LIRError> {
+		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, _consts: &mut Constants) -> Result<LExpression, LIRError> {
 			Ok(match expression {
 				ast::Expression::LVar(i) => {
 					let Decl { ty, name, mutable, ..} = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
@@ -325,14 +397,15 @@ pub mod lir {
 	}
 	
 	impl Expression {
-		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap<'_>, consts: &mut Constants) -> Result<Expression, LIRError> {
+		fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, consts: &mut Constants) -> Result<Expression, LIRError> {
 			Ok(match expression {
 				ast::Expression::Assign(lhs, op, rhs) => {
 					let lvalue = LExpression::from_ast(*lhs, name_resolve, consts)?;
 					if !lvalue.mutable {
 						Err(LIRError { ty: LIRErrorType::ImmutAssign })?;
 					}
-					let rvalue = Expression::from_ast(*rhs, name_resolve, consts)?;
+					let rvalue = Expression::from_ast(*rhs, name_resolve, consts)?.coerce(&lvalue.ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
+
 					Expression {
 						ty: Some(lvalue.ty.clone()),
 						value: ExpressionValue::Assign(op, lvalue, Box::new(rvalue))
@@ -340,17 +413,39 @@ pub mod lir {
 				},
 			    ast::Expression::Op(op, lhs, rhs) => {
 					Expression {
-						ty: Some(Type::Name(Ident::UnmangledItem("i32".to_owned()))), //TODO !!
+						ty: Some(Type::Primitive(Primitive::I32)), //TODO !!
 						value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
 					}
 				},
-				ast::Expression::Call(f, a) => {
+				ast::Expression::Call(f, mut a) => {
 					match *f {
 						ast::Expression::LVar(n) => {
-							let (ty, ident) = name_resolve.resolve_fn_default(n).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
+							let decl = name_resolve.resolve_fn_default(n).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?.clone();
+							if if decl.varadic { a.len() < decl.params.len() } else { a.len() != decl.params.len() } {
+								Err(LIRError { ty: LIRErrorType::ArgCountMismatch })?;
+							}
+
+							let varargs = if a.len() == decl.params.len() {
+								vec![]
+							} else {
+								a.split_off(decl.params.len())
+							};
+
+							let args = a.into_iter()
+								.zip(decl.params.iter())
+								.map(|(e, (_, ty))| Expression::from_ast(e, name_resolve, consts)?
+									.coerce(ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })
+								)
+								.collect::<Vec<_>>()
+								.into_iter()
+								.chain(varargs.into_iter()
+									.map(|e| Expression::from_ast(e, name_resolve, consts))
+								)
+								.collect::<Result<Vec<_>, _>>()?;
+
 							Expression {
-								ty,
-								value: ExpressionValue::CallConcrete(ident, a.into_iter().map(|e| Expression::from_ast(e, name_resolve, consts)).collect::<Result<_, _>>()?),
+								ty: decl.returns.clone(),
+								value: ExpressionValue::CallConcrete(decl.id.clone(), args),
 							}
 						},
 						_ => todo!(),
@@ -365,7 +460,7 @@ pub mod lir {
 				ast::Expression::CStringRef(s) => {
 					consts.strings.push((s, true));
 					Expression {
-						ty: Some(Type::PtrConst(Box::new(Type::Name(Ident::UnmangledItem("c_char".to_owned()))))),
+						ty: Some(Type::PtrConst(Box::new(Type::Primitive(Primitive::CChar)))),
 						value: ExpressionValue::ConstStr(consts.strings.len() - 1),
 					}
 				},
@@ -378,17 +473,51 @@ pub mod lir {
 				},
 			})
 		}
+
+		fn coerce(mut self, target_type: &Type) -> Option<Expression> {
+			if self.ty.as_ref().map(|t| t == target_type).unwrap_or(false) {
+				return Some(self);
+			}
+			Some(match (self.ty, target_type) {
+				(Some(Type::Primitive(Primitive::I32)), Type::Primitive(Primitive::CInt)) =>  {
+					self.ty = Some(Type::Primitive(Primitive::CInt));
+					self
+				},
+				_ => todo!(),
+			})
+		}
 	}
 
 	impl Type {
-		fn from_ast(ast: ast::Type, name_resolve: &mut NameResolveMap<'_>) -> Result<Type, LIRError> {
+		fn from_ast(ast: ast::Type, name_resolve: &mut NameResolveMap) -> Result<Type, LIRError> {
 			Ok(match ast {
-				ast::Type::Name(v) => Type::Name(name_resolve.resolve_typename_default(v).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?),
+				ast::Type::Name(v) => if v.len() == 1 {
+					match &*v[0] {
+						"i8" => Type::Primitive(Primitive::I8),
+						"i16" => Type::Primitive(Primitive::I16),
+						"i32" => Type::Primitive(Primitive::I32),
+						"i64" => Type::Primitive(Primitive::I64),
+						"u8" => Type::Primitive(Primitive::U8),
+						"u16" => Type::Primitive(Primitive::U16),
+						"u32" => Type::Primitive(Primitive::U32),
+						"u64" => Type::Primitive(Primitive::U64),
+						"c_char" => Type::Primitive(Primitive::CChar),
+						"c_short" => Type::Primitive(Primitive::CShort),
+						"c_int" => Type::Primitive(Primitive::CInt),
+						"c_long" => Type::Primitive(Primitive::CLong),
+						"c_longlong" => Type::Primitive(Primitive::CLLong),
+						_ => Type::Name(name_resolve.resolve_typename_default(v).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?)
+					}
+				} else {
+					Type::Name(name_resolve.resolve_typename_default(v).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?)
+				},
 				ast::Type::PtrDynConst(ty) => Type::PtrDynConst(Box::new(Type::from_ast(*ty, name_resolve)?)),
 				ast::Type::PtrDynMut(ty) => Type::PtrDynMut(Box::new(Type::from_ast(*ty, name_resolve)?)),
 				ast::Type::PtrConst(ty) => Type::PtrConst(Box::new(Type::from_ast(*ty, name_resolve)?)),
 				ast::Type::PtrMut(ty) => Type::PtrMut(Box::new(Type::from_ast(*ty, name_resolve)?)),
-				_ => todo!(),
+			    ast::Type::Slice(ty) => Type::Slice(Box::new(Type::from_ast(*ty, name_resolve)?)),
+			    ast::Type::Arr(ty, n) => Type::Arr(Box::new(Type::from_ast(*ty, name_resolve)?), n),
+			    ast::Type::Tuple(types) => Type::Tuple(types.into_iter().map(|ty| Type::from_ast(ty, name_resolve)).collect::<Result<_, _>>()?),
 			})
 		}
 	}
@@ -396,16 +525,16 @@ pub mod lir {
 		pub fn fn_mangle(&self) -> String {
 			match self {
 				Ident::UnmangledItem(s) => s.clone(),
-				Ident::Function(parts) => std::iter::once("_LZ".to_owned())
-					.chain(
-						parts.iter()
-							.flat_map(|item|
-								std::iter::once(item.len().to_string())
-									.chain(std::iter::once(item.clone()))
-							)
-					)
-					.chain(std::iter::once("E".to_owned()))
-					.collect(),
+				// Ident::Function(parts) => std::iter::once("_LZ".to_owned())
+				// 	.chain(
+				// 		parts.iter()
+				// 			.flat_map(|item|
+				// 				std::iter::once(item.len().to_string())
+				// 					.chain(std::iter::once(item.clone()))
+				// 			)
+				// 	)
+				// 	.chain(std::iter::once("E".to_owned()))
+				// 	.collect(),
 				_ => panic!("Attempted to mangle incompatible id as function"),
 			}
 		}
@@ -423,29 +552,27 @@ pub mod lir {
 	}
 
 	fn integer_type_for_value(_value: u64) -> Type {
-		Type::Name(Ident::UnmangledItem("i32".to_owned())) //TODO
+		Type::Primitive(Primitive::I32) //TODO
 	}
 }
 
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct StackScope {
 	vars: HashMap<String, lir::Decl>,
 }
 
-struct NameResolveMap<'a> {
-	local_fns: HashMap<lir::Ident, &'a lir::ExternFn>,
+#[derive(Debug)]
+struct NameResolveMap {
+	local_fns: HashMap<lir::Ident, lir::DeclFn>,
 	scope_stack: Vec<StackScope>,
 }
 
-impl NameResolveMap<'_> {
-	fn resolve_fn_default(&self, name: Vec<String>) -> Option<(Option<lir::Type>, lir::Ident)> {
+impl NameResolveMap {
+	fn resolve_fn_default(&self, name: Vec<String>) -> Option<&lir::DeclFn> {
 		let id = lir::Ident::UnmangledItem(name[0].clone()); //TODO
-		match self.local_fns.get(&id) { //TODO
-			Some(decl) => Some((decl.returns.clone(), id)),
-			None => None,
-		}
+		self.local_fns.get(&id) //TODO
 	}
 
 	fn resolve_var_default(&self, name: Vec<String>) -> Option<lir::Decl> {
@@ -522,14 +649,16 @@ impl Compiler {
 		llvm_module.set_data_layout(&self.target.get_target_data().get_data_layout());
 		llvm_module.set_triple(&self.target.get_triple());
 
-		for decl in module.extern_fns {
+		let mut functions = HashMap::new();
+		for decl in module.fn_decls {
 			let params = decl.params.iter().map(|(_, ty)| self.get_type(ty)).collect::<Vec<_>>();
 			let varadic = decl.varadic;
-			let _function = llvm_module.add_function(
+			let function = llvm_module.add_function(
 				&decl.id.fn_mangle(),
 				decl.returns.map(|x| self.get_type(&x).fn_type(&params, varadic)).unwrap_or(self.llvm.void_type().fn_type(&params, false)),
 				Some(Linkage::External),
 			);
+			functions.insert(decl.id, function);
 		}
 
 		let global_pool = GlobalPool {
@@ -541,6 +670,11 @@ impl Compiler {
 				global
 			}).collect(),
 		};
+
+		for def in module.fn_defs {
+			let function = functions.get(&def.id).expect("Was inserted in LIR stage").clone();
+			self.compile_fn_body(def.body, &global_pool, &llvm_module, function);
+		}
 		
 		if let Some(def) = module.entry {
 			let function = llvm_module.add_function(
@@ -569,30 +703,22 @@ impl Compiler {
 			lir::Type::Arr(..) => todo!(),
 			lir::Type::Slice(..) => todo!(),
 			lir::Type::Tuple(..) => todo!(),
-			lir::Type::Name(id) => {
-				match id {
-					lir::Ident::UnmangledItem(id) => {
-						// Check for primitive types
-						match &**id {
-							"i8" => self.llvm.i8_type().into(),
-							"i16" => self.llvm.i16_type().into(),
-							"i32" => self.llvm.i32_type().into(),
-							"i64" => self.llvm.i64_type().into(),
-							"c_char" => self.llvm.i8_type().into(),
-							"c_short" => self.llvm.i16_type().into(), // ILP32, LLP64, LP64
-							"c_int" => self.llvm.i32_type().into(), // ILP32, LLP64, LP64
-							"c_long" => if self.target.get_triple().as_str().to_bytes().split(|&b| b == b'-').skip(2).next().unwrap() == b"windows" {
-								self.llvm.i32_type().into() // ILP32, LLP64 (Windows APIs)
-							} else {
-								self.llvm.ptr_sized_int_type(&self.target.get_target_data(), None).into() // ILP32, LP64 (Unix APIs)
-							}
-							"c_longlong" => self.llvm.i64_type().into(),
-							_ => todo!(),
-						}
-					}
-					_ => todo!(),
+			lir::Type::Primitive(p) => match p {
+				lir::Primitive::I8 | lir::Primitive::U8 => self.llvm.i8_type().into(),
+				lir::Primitive::I16 | lir::Primitive::U16 => self.llvm.i16_type().into(),
+				lir::Primitive::I32 | lir::Primitive::U32 => self.llvm.i32_type().into(),
+				lir::Primitive::I64 | lir::Primitive::U64 => self.llvm.i64_type().into(),
+				lir::Primitive::CChar => self.llvm.i8_type().into(),
+				lir::Primitive::CShort => self.llvm.i16_type().into(), // ILP32, LLP64, LP64
+				lir::Primitive::CInt => self.llvm.i32_type().into(), // ILP32, LLP64, LP64
+				lir::Primitive::CLong => if self.target.get_triple().as_str().to_bytes().split(|&b| b == b'-').skip(2).next().unwrap() == b"windows" {
+					self.llvm.i32_type().into() // ILP32, LLP64 (Windows APIs)
+				} else {
+					self.llvm.ptr_sized_int_type(&self.target.get_target_data(), None).into() // ILP32, LP64 (Unix APIs)
 				}
+				lir::Primitive::CLLong => self.llvm.i64_type().into(),
 			}
+			lir::Type::Name(..) => todo!()
 		}
 	}
 

@@ -1,4 +1,3 @@
-extern fn puts(*const c_char) -> c_int;
 extern fn putchar(c_int) -> c_int;
 extern fn printf(*const c_char...) -> c_int;
 

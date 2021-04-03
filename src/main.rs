@@ -13,9 +13,10 @@ fn main() {
 	let file_path = std::env::args().nth(1).unwrap();
 	let lexer = Lexer::new(&file_path).unwrap();
 	let decls = parser::LokFileParser::new().parse(lexer).unwrap();
-	let module = codegen::lir::Module::from_ast(codegen::lir::Ident::UnmangledItem("Dunno".to_owned()), decls);
+	let module = codegen::lir::Module::from_ast(codegen::lir::Ident::UnmangledItem("Dunno".to_owned()), decls).unwrap();
+	module.print_to_file("todo.lir").unwrap();
 	let compiler = codegen::Compiler::new();
-	let compiled_mod = compiler.compile_lir_module(module.unwrap());
+	let compiled_mod = compiler.compile_lir_module(module);
 	compiler.print_ir(&compiled_mod, "todo.ll");
 	compiler.write_module(&compiled_mod, "todo.o");
 }

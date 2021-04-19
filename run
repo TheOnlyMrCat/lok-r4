@@ -1,15 +1,13 @@
 $opt default_positionals
 
 #b b
-RUSTFLAGS="-L src/gen"
-make LEXFLAGS=-d
+make
 cargo build
 #/
 
 #- b
-RUSTFLAGS="-L src/gen"
 test -f "test/$1.lok"
-make LEXFLAGS=-d
+make
 cargo run -- "test/$1.lok"
 #/
 
@@ -19,10 +17,10 @@ gcc todo.o -o todo
 #/
 
 #lldb
-run :build:b
+run :b:b
 lldb target/debug/lok
 #/
 
 #clean r
-rm -f todo todo.o todo.ll todo.lir
+rm -f todo todo.o todo.ll todo.lir atest.log
 #/

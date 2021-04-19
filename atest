@@ -1,0 +1,25 @@
+#lok
+RUSTFLAGS="-L src/gen"
+make | true
+cargo run -- "test/$1.lok"
+gcc todo.o -o todo
+./todo
+#/
+
+## hello: lok
+#0
+Hello, world!
+
+#/-
+
+## expr: lok
+#0
+@
+Calculation: 6 + 7 - 5 * 4 + 4 + 4 / 2 = -1
+#/-
+
+## fn: lok
+#0
+Wow so secret: -710910524
+
+#/-

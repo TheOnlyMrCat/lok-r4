@@ -222,9 +222,7 @@ int set_input(const char *filename) {
 }
 
 struct TokenMeta next_token() {
-	yy_flex_debug = 1;
 	enum Token tok = yylex();
-	puts("--returning token");
 	struct TokenMeta meta = {
 		.type = tok,
 		.leng = yyleng,

@@ -7,5 +7,5 @@ entry {
 	putchar(10);
 	let mut calc = 6 + 7 - 5 * 4 + 4;
 	calc = calc + 4 / 2;
-	printf(c"%s 6 + 7 - 5 * 4 + 4 + 4 / 2 = %d\n", c"Calculation:", calc);
+	printf(c"%s 6 + 7 - 5 * 4 + 4 + 4 / 2 = %d", c"Calculation:", calc);
 }

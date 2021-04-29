@@ -25,6 +25,7 @@ extern {
 		"mut" => lexer::Token::Mut,
 		"dyn" => lexer::Token::Dyn,
 		"fn" => lexer::Token::Fn,
+		"use" => lexer::Token::Use,
 		"extern" => lexer::Token::Extern,
 		"return" => lexer::Token::Return,
 		"yield" => lexer::Token::Yield,
@@ -73,6 +74,17 @@ TopLevelDecl: ast::TopLevelDecl = {
 		})
 	},
 	<TopLevelDef> => ast::TopLevelDecl::Def(<>),
+	<Decl> => ast::TopLevelDecl::Decl(<>),
+}
+
+Decl: ast::Decl = {
+	<external:"extern"?> "use" <ty:("(" <STRING> ")")?> <path:STRING> => {
+		ast::Decl::Use(ast::Use {
+			external: external.is_some(),
+			ty,
+			path,
+		})
+	}
 }
 
 TopLevelDef: ast::TopLevelDef = {

@@ -10,6 +10,7 @@ enum Token {
 	Token_Const,
 	Token_Mut,
 	Token_Fn,
+	Token_Use,
 	Token_Extern,
 	Token_Return,
 	Token_Yield,
@@ -88,6 +89,7 @@ const return Token_Const;
 mut return Token_Mut;
 dyn return Token_Dyn;
 fn return Token_Fn;
+use return Token_Use;
 extern return Token_Extern;
 return return Token_Return;
 yield return Token_Yield;

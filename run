@@ -24,3 +24,9 @@ lldb target/debug/lok
 #clean r
 rm -f todo todo.o todo.ll todo.lir atest.log
 #/
+
+#test
+make
+cargo build
+atest
+#/

@@ -1,3 +1,5 @@
+use either::{Either, Left, Right};
+
 use crate::error::{LIRError, LIRErrorType};
 
 use super::ast;
@@ -43,26 +45,26 @@ pub struct FnBody {
 	pub block: Block,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Block {
 	pub statements: Vec<Statement>,
 	pub tail: Option<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Statement {
 	Decl(String, Expression),
 	Eval(Expression),
 	Return(Option<Expression>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Expression {
 	pub ty: Option<Type>,
 	pub value: ExpressionValue
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LExpression {
 	pub ty: Type,
 	pub mutable: bool,
@@ -79,8 +81,14 @@ pub enum Op {
 
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+pub struct If(Box<Expression>, Box<Block>, Option<Either<Box<If>, Box<Block>>>);
+
+#[derive(Clone, Debug)]
 pub enum ExpressionValue {
+	If(If),
+	Block(Box<Block>),
+
 	Assign(Option<Op>, LExpression, Box<Expression>),
 
 	Op(Op, Box<Expression>, Box<Expression>),
@@ -92,7 +100,7 @@ pub enum ExpressionValue {
 	ConstStr(usize /* Index into global string pool */),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum LExpressionValue {
 	Var(Ident),
 }
@@ -119,6 +127,7 @@ pub enum Type {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Primitive {
+	Bool,
 	I8,
 	I16,
 	I32,
@@ -247,20 +256,29 @@ impl Module {
 impl FnBody {
 	fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap, consts: &mut Constants) -> Result<FnBody, LIRError> {
 		let mut decls = vec![];
-		let mut statements = vec![];
 
+		Ok(FnBody {
+			block: Block::from_ast(block, name_resolve, &mut decls, consts)?,
+			decls,
+		})
+	}
+}
+
+impl Block {
+	fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<Block, LIRError> {
+		let mut statements = vec![];
 		name_resolve.scope_stack.push(StackScope::default());
 
 		for statement in block.statements {
 			match statement {
 				ast::Statement::Expression(e) => {
-					statements.push(Statement::Eval(Expression::from_ast(e, name_resolve, consts)?))
+					statements.push(Statement::Eval(Expression::from_ast(e, name_resolve, decls, consts)?))
 				},
 				ast::Statement::Return(e) => {
-					statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, consts)).transpose()?))
+					statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, decls, consts)).transpose()?))
 				}
 				ast::Statement::Decl { name, mutable, expected_type, value } => {
-					let mut expr = Expression::from_ast(value, name_resolve, consts)?;
+					let mut expr = Expression::from_ast(value, name_resolve, decls, consts)?;
 					if let Some(expected) = expected_type {
 						expr = expr.coerce(&Type::from_ast(expected, name_resolve)?).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
 					}
@@ -276,20 +294,15 @@ impl FnBody {
 			}
 		}
 
-		let block = Block {
+		Ok(Block {
 			statements,
-			tail: block.tail.map(|expr| Expression::from_ast(expr, name_resolve, consts)).transpose()?,
-		};
-
-		Ok(FnBody {
-			decls,
-			block,
+			tail: block.tail.map(|expr| Expression::from_ast(expr, name_resolve, decls, consts)).transpose()?,
 		})
 	}
 }
 
 impl LExpression {
-	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, _consts: &mut Constants) -> Result<LExpression, LIRError> {
+	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, _consts: &mut Constants) -> Result<LExpression, LIRError> {
 		Ok(match expression {
 			ast::Expression::LVar(i) => {
 				let Decl { ty, name, mutable, ..} = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
@@ -305,14 +318,14 @@ impl LExpression {
 }
 
 impl Expression {
-	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, consts: &mut Constants) -> Result<Expression, LIRError> {
+	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<Expression, LIRError> {
 		Ok(match expression {
 			ast::Expression::Assign(lhs, op, rhs) => {
-				let lvalue = LExpression::from_ast(*lhs, name_resolve, consts)?;
+				let lvalue = LExpression::from_ast(*lhs, name_resolve, decls, consts)?;
 				if !lvalue.mutable {
 					Err(LIRError { ty: LIRErrorType::ImmutAssign })?;
 				}
-				let rvalue = Expression::from_ast(*rhs, name_resolve, consts)?.coerce(&lvalue.ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
+				let rvalue = Expression::from_ast(*rhs, name_resolve, decls, consts)?.coerce(&lvalue.ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
 
 				Expression {
 					ty: Some(lvalue.ty.clone()),
@@ -322,7 +335,7 @@ impl Expression {
 			ast::Expression::Op(op, lhs, rhs) => {
 				Expression {
 					ty: Some(Type::Primitive(Primitive::I32)), //TODO !!
-					value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, consts)?)),
+					value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, decls, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, decls, consts)?)),
 				}
 			},
 			ast::Expression::Call(f, mut a) => {
@@ -341,13 +354,13 @@ impl Expression {
 
 						let args = a.into_iter()
 							.zip(decl.params.iter())
-							.map(|(e, (_, ty))| Expression::from_ast(e, name_resolve, consts)?
+							.map(|(e, (_, ty))| Expression::from_ast(e, name_resolve, decls, consts)?
 								.coerce(ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })
 							)
 							.collect::<Vec<_>>()
 							.into_iter()
 							.chain(varargs.into_iter()
-								.map(|e| Expression::from_ast(e, name_resolve, consts))
+								.map(|e| Expression::from_ast(e, name_resolve, decls, consts))
 							)
 							.collect::<Result<Vec<_>, _>>()?;
 
@@ -365,6 +378,20 @@ impl Expression {
 					value: ExpressionValue::ConstInt(i)
 				}
 			},
+			ast::Expression::Block(b) => {
+				let ir = Block::from_ast(*b, name_resolve, decls, consts)?;
+				Expression {
+					ty: ir.tail.clone().and_then(|e| e.ty),
+					value: ExpressionValue::Block(Box::new(ir)),
+				}
+			},
+			ast::Expression::If(i) => {
+				let ir = If::from_ast(i, name_resolve, decls, consts)?;
+				Expression {
+					ty: ir.1.tail.clone().and_then(|e| e.ty),
+					value: ExpressionValue::If(ir)
+				}
+			},
 			ast::Expression::CStringRef(s) => {
 				consts.strings.push((s, true));
 				Expression {
@@ -373,7 +400,7 @@ impl Expression {
 				}
 			},
 			ast::Expression::LVar(_) => {
-				let lexpr = LExpression::from_ast(expression, name_resolve, consts)?;
+				let lexpr = LExpression::from_ast(expression, name_resolve, decls, consts)?;
 				Expression {
 					ty: Some(lexpr.ty.clone()),
 					value: ExpressionValue::LExpr(lexpr),
@@ -396,11 +423,51 @@ impl Expression {
 	}
 }
 
+impl If {
+	fn from_ast(ast: ast::If, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<If, LIRError> {
+		let ast::If(cond, true_branch, false_branch) = ast;
+		let condition = Expression::from_ast(*cond, name_resolve, decls, consts)?.coerce(&Type::Primitive(Primitive::Bool)).ok_or(LIRError { ty: LIRErrorType::IllegalConditionExpr })?;
+		let true_block = Block::from_ast(*true_branch, name_resolve, decls, consts)?;
+		let false_item = match false_branch {
+			Some(Left(i)) => Some(Left(Box::new(If::from_ast(*i, name_resolve, decls, consts)?))),
+			Some(Right(b)) => Some(Right(Box::new(Block::from_ast(*b, name_resolve, decls, consts)?))),
+			None => None
+		};
+		let lir = If(Box::new(condition), Box::new(true_block), false_item);
+		if lir.has_equivalent_types() {
+			Ok(lir)
+		} else {
+			Err(LIRError { ty: LIRErrorType::MismatchedTypes })
+		}
+	}
+
+	fn has_equivalent_types(&self) -> bool {
+		self.1.tail.as_ref().and_then(|tail| tail.ty.as_ref()) ==
+		match self.2.as_ref().map(|item| item.as_ref().either(
+			|i| {
+				if i.has_equivalent_types() {
+					Right(i.1.tail.as_ref().and_then(|tail| tail.ty.as_ref()))
+				} else {
+					Left(())
+				}
+			},
+			|b| {
+				Right(b.tail.as_ref().and_then(|tail| tail.ty.as_ref()))
+			}
+		)) {
+			Some(Left(())) => return false,
+			Some(Right(t)) => t,
+			None => None,
+		}
+	}
+}
+
 impl Type {
 	fn from_ast(ast: ast::Type, name_resolve: &mut NameResolveMap) -> Result<Type, LIRError> {
 		Ok(match ast {
 			ast::Type::Name(v) => if v.len() == 1 {
 				match &*v[0] {
+					"bool" => Type::Primitive(Primitive::Bool),
 					"i8" => Type::Primitive(Primitive::I8),
 					"i16" => Type::Primitive(Primitive::I16),
 					"i32" => Type::Primitive(Primitive::I32),
@@ -429,6 +496,7 @@ impl Type {
 		})
 	}
 }
+
 impl Ident {
 	pub fn fn_mangle(&self) -> String {
 		match self {

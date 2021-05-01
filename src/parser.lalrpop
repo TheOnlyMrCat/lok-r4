@@ -166,6 +166,7 @@ ValueExpression: ast::Expression = {
 	<LValueExpression> => <>,
 	<CSTRING> => ast::Expression::CStringRef(<>),
 	"(" <Expression> ")" => <>,
+	<Block> => ast::Expression::Block(Box::new(<>)),
 }
 
 LValueExpression: ast::Expression = {

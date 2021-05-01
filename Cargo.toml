@@ -7,3 +7,5 @@ edition = "2018"
 [dependencies]
 inkwell = { version = "0.1.0-llvm10sample", features = ["llvm10-0"] }
 lalrpop-util = "0.19.5"
+either = "1.6"
+unique_id = { version = "0.1", features = ["string"] }

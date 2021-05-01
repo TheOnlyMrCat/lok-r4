@@ -1,3 +1,5 @@
+use either::Either;
+
 use super::lir;
 
 #[derive(Debug)]
@@ -8,7 +10,7 @@ pub enum TopLevelDecl {
 }
 
 #[derive(Debug)]
-pub struct Use{
+pub struct Use {
 	pub external: bool,
 	pub ty: Option<Vec<u8>>,
 	pub path: Vec<u8>,
@@ -73,7 +75,13 @@ pub enum Statement {
 pub type Op = lir::Op;
 
 #[derive(Debug)]
+pub struct If(pub Box<Expression>, pub Box<Block>, pub Option<Either<Box<If>, Box<Block>>>);
+
+#[derive(Debug)]
 pub enum Expression {
+	If(If),
+	Block(Box<Block>),
+
 	Assign(Box<Expression>, Option<Op>, Box<Expression>),
 
 	Op(Op, Box<Expression>, Box<Expression>),

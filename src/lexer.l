@@ -38,8 +38,11 @@ enum Token {
 	Token_Slash,
 	Token_Percent,
 	Token_Equals,
+	Token_DblEquals,
 	Token_Greater,
+	Token_GreaterEqual,
 	Token_Less,
+	Token_LessEqual,
 
 	Token_SingleArrow,
 	Token_DoubleArrow,
@@ -177,8 +180,11 @@ b\" BEGIN STRING; stringLength = 0; stringType = Token_ByteStaticString;
 "/" return Token_Slash;
 "%" return Token_Percent;
 "=" return Token_Equals;
+"==" return Token_DblEquals;
 ">" return Token_Greater;
+">=" return Token_GreaterEqual;
 "<" return Token_Less;
+"<=" return Token_LessEqual;
 
 "->" return Token_SingleArrow;
 "=>" return Token_DoubleArrow;

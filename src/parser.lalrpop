@@ -1,3 +1,4 @@
+use either::{Either, Left, Right};
 use crate::LexError;
 use crate::lexer;
 use crate::codegen::ast;
@@ -52,8 +53,11 @@ extern {
 		"/" => lexer::Token::Slash,
 		"%" => lexer::Token::Percent,
 		"=" => lexer::Token::Equals,
+		"==" => lexer::Token::DblEquals,
 		">" => lexer::Token::Greater,
+		">=" => lexer::Token::GreaterEqual,
 		"<" => lexer::Token::Less,
+		"<=" => lexer::Token::LessEqual,
 
 		"->" => lexer::Token::SingleArrow,
 		"=>" => lexer::Token::DoubleArrow,
@@ -109,15 +113,53 @@ Def: ast::Def = {
 }
 
 Block: ast::Block = {
-	"{" <statements:Statement*> <tail:Expression?> "}" => {
+	<TaillessBlock> => <>,
+	<TailedBlock> => <>,
+}
+
+TailedBlock: ast::Block = {
+	"{" <statements:Statement*> <tail:Expression> "}" => {
 		ast::Block {
 			statements,
-			tail,
+			tail: Some(tail),
 		}
 	},
 }
 
+TaillessBlock: ast::Block = {
+	"{" <statements:Statement*> "}" => {
+		ast::Block {
+			statements,
+			tail: None,
+		}
+	}
+}
+
+TailedIf: ast::If = {
+	"if" <cond:Expression> <if_true:TailedBlock> <if_false:TailedElse> => ast::If(Box::new(cond), Box::new(if_true), Some(if_false))
+}
+
+TailedElse: Either<Box<ast::If>, Box<ast::Block>> = {
+	"else" <TailedIf> => Left(Box::new(<>)),
+	"else" <TailedBlock> => Right(Box::new(<>)),
+}
+
+TaillessIf: ast::If = {
+	"if" <cond:Expression> <if_true:TaillessBlock> <if_false:TaillessElse?> => ast::If(Box::new(cond), Box::new(if_true), if_false)
+}
+
+TaillessElse: Either<Box<ast::If>, Box<ast::Block>> = {
+	"else" <TaillessIf> => Left(Box::new(<>)),
+	"else" <TaillessBlock> => Right(Box::new(<>)),
+}
+
 Statement: ast::Statement = {
+	<TaillessBlock> => {
+		ast::Statement::Expression(ast::Expression::Block(Box::new(<>)))
+	},
+	<TaillessIf> => {
+		ast::Statement::Expression(ast::Expression::If(<>))
+	},
 	<Expression> ";" => {
 		ast::Statement::Expression(<>)
 	},
@@ -139,8 +181,17 @@ Expression: ast::Expression = {
 }
 
 AssignExpression: ast::Expression = {
-	<lhs:LValueExpression> "=" <rhs:SumExpression> => ast::Expression::Assign(Box::new(lhs), None, Box::new(rhs)),
-	<SumExpression> => <>,
+	<lhs:LValueExpression> "=" <rhs:CompareExpression> => ast::Expression::Assign(Box::new(lhs), None, Box::new(rhs)),
+	<CompareExpression> => <>,
+}
+
+CompareExpression: ast::Expression = {
+	<lhs:CompareExpression> "<" <rhs:SumExpression>  => ast::Expression::Op(ast::Op::Lt, Box::new(lhs), Box::new(rhs)),
+	<lhs:CompareExpression> "<=" <rhs:SumExpression> => ast::Expression::Op(ast::Op::Le, Box::new(lhs), Box::new(rhs)),
+	<lhs:CompareExpression> "==" <rhs:SumExpression> => ast::Expression::Op(ast::Op::Eq, Box::new(lhs), Box::new(rhs)),
+	<lhs:CompareExpression> ">=" <rhs:SumExpression> => ast::Expression::Op(ast::Op::Ge, Box::new(lhs), Box::new(rhs)),
+	<lhs:CompareExpression> ">" <rhs:SumExpression>  => ast::Expression::Op(ast::Op::Gt, Box::new(lhs), Box::new(rhs)),
+	<SumExpression> => <>
 }
 
 SumExpression: ast::Expression = {
@@ -166,10 +217,11 @@ ValueExpression: ast::Expression = {
 	<LValueExpression> => <>,
 	<CSTRING> => ast::Expression::CStringRef(<>),
 	"(" <Expression> ")" => <>,
-	<Block> => ast::Expression::Block(Box::new(<>)),
 }
 
 LValueExpression: ast::Expression = {
+	<TailedBlock> => ast::Expression::Block(Box::new(<>)),
+	<TailedIf> => ast::Expression::If(<>),
 	<NSIdent> => ast::Expression::LVar(<>),
 }
 

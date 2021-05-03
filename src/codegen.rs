@@ -52,7 +52,7 @@ impl NameResolveMap {
 
 use unique_id::Generator;
 
-use inkwell::{context::Context, values::GlobalValue};
+use inkwell::{IntPredicate, context::Context, values::GlobalValue};
 use inkwell::builder::Builder;
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::{Module, Linkage};
@@ -106,14 +106,14 @@ impl Compiler {
 
 		let mut functions = HashMap::new();
 		for decl in module.fn_decls {
-			let params = decl.params.iter().map(|(_, ty)| self.get_type(ty)).collect::<Vec<_>>();
+			let (params, types) = decl.params.into_iter().map(|(s, ty)| (s, self.get_type(&ty))).unzip::<_, _, Vec<_>, Vec<_>>();
 			let varadic = decl.varadic;
 			let function = llvm_module.add_function(
 				&decl.id.fn_mangle(),
-				decl.returns.map(|x| self.get_type(&x).fn_type(&params, varadic)).unwrap_or(self.llvm.void_type().fn_type(&params, false)),
+				decl.returns.map(|x| self.get_type(&x).fn_type(&types, varadic)).unwrap_or(self.llvm.void_type().fn_type(&types, false)),
 				Some(Linkage::External),
 			);
-			functions.insert(decl.id, function);
+			functions.insert(decl.id, (function, params));
 		}
 
 		let global_pool = GlobalPool {
@@ -127,8 +127,8 @@ impl Compiler {
 		};
 
 		for def in module.fn_defs {
-			let function = functions.get(&def.id).expect("Was inserted in LIR stage").clone();
-			self.compile_fn_body(def.body, &global_pool, &llvm_module, function);
+			let (function, params) = functions.get(&def.id).expect("Was inserted in LIR stage").clone();
+			self.compile_fn_body(def.body, &params, &global_pool, &llvm_module, function);
 		}
 		
 		if let Some(def) = module.entry {
@@ -140,7 +140,7 @@ impl Compiler {
 				},
 				Some(Linkage::External),
 			);
-			self.compile_fn_body(def.body, &global_pool, &llvm_module, function);
+			self.compile_fn_body(def.body, &[], &global_pool, &llvm_module, function);
 		}
 		
 		llvm_module
@@ -178,16 +178,27 @@ impl Compiler {
 		}
 	}
 
-	fn compile_fn_body<'ctx>(&'ctx self, body: lir::FnBody, global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>) {
+	fn compile_fn_body<'ctx>(&'ctx self, body: lir::FnBody, param_decls: &[String], global_pool: &GlobalPool<'ctx>, module: &Module<'ctx>, fn_value: FunctionValue<'ctx>) {
 		let builder = self.llvm.create_builder();
 		let basic_block = self.llvm.append_basic_block(fn_value, "decl");
 		builder.position_at_end(basic_block);
 
+		let param_values = fn_value.get_params();
+
 		let mut pointers = HashMap::<String, PointerValue<'ctx>>::new();
+
+		for (param, value) in param_decls.into_iter().zip(param_values.iter()) {
+			pointers.insert(param.clone(), builder.build_alloca(value.get_type(), &param));
+		}
 
 		for decl in &body.decls {
 			let name = decl.name.local_mangle();
 			pointers.insert(name.clone(), builder.build_alloca(self.get_type(&decl.ty), &name));
+		}
+
+		for (param, value) in param_decls.into_iter().zip(param_values.into_iter()) {
+			let ptr = pointers.get(param).expect("Was inserted above");
+			builder.build_store(*ptr, value);
 		}
 
 		let block = self.compile_block(body.block, "entry", &pointers, global_pool, module, fn_value);
@@ -283,6 +294,72 @@ impl Compiler {
 					},
 				}
 			},
+		    lir::ExpressionValue::If(lir::If(cond, if_true, if_false)) => {
+				let comparison = self.compile_expr(cond.value, pointers, global_pool, module, fn_value, builder, current_block).unwrap().into_int_value();
+				let true_block = self.compile_block(*if_true, &self.uid.next_id(), pointers, global_pool, module, fn_value);
+				let false_block = if_false.map(|b| self.compile_block(*b, &self.uid.next_id(), pointers, global_pool, module, fn_value));
+				let next_block = self.llvm.append_basic_block(fn_value, &self.uid.next_id());
+				*current_block = next_block;
+				match false_block {
+					Some(false_block) => {
+						builder.build_conditional_branch(comparison, true_block.first_block, false_block.first_block);
+						match (true_block.tail, false_block.tail) {
+							(BlockTail::Returned, BlockTail::Returned) => None,
+							(BlockTail::Returned, BlockTail::NoValue) => {
+								builder.position_at_end(false_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								None
+							},
+							(BlockTail::Returned, BlockTail::Value(false_val)) => {
+								builder.position_at_end(false_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								Some(false_val)
+							},
+							(BlockTail::NoValue, BlockTail::Returned) => {
+								builder.position_at_end(true_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								None
+							},
+							(BlockTail::NoValue, BlockTail::NoValue) => {
+								builder.position_at_end(true_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								builder.position_at_end(false_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								None
+							},
+							(BlockTail::Value(true_val), BlockTail::Returned) => {
+								builder.position_at_end(true_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								Some(true_val)
+							},
+							(BlockTail::Value(true_val), BlockTail::Value(false_val)) => {
+								builder.position_at_end(true_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								builder.position_at_end(false_block.last_block);
+								builder.build_unconditional_branch(next_block);
+								builder.position_at_end(next_block);
+								let phi = builder.build_phi(true_val.get_type(), "condresolve");
+								phi.add_incoming(&[(&true_val, true_block.last_block), (&false_val, false_block.last_block)]);
+								Some(phi.as_basic_value())
+							}
+							(BlockTail::NoValue, BlockTail::Value(_)) | (BlockTail::Value(_), BlockTail::NoValue) => panic!("Unexpected dissimilarity in if expression value"),
+						}
+					},
+					None => {
+						builder.build_conditional_branch(comparison, true_block.first_block, next_block);
+						match true_block.tail {
+							BlockTail::Returned => {},
+							BlockTail::NoValue => {
+								builder.position_at_end(true_block.last_block);
+								builder.build_unconditional_branch(next_block);
+							}
+							BlockTail::Value(_) => panic!("Unexpected value in single-branch if expression"),
+						}
+						builder.position_at_end(next_block);
+						None
+					}
+				}
+			},
 		    lir::ExpressionValue::Assign(op, lhs, rhs) => {
 				let val = match op {
 					Some(_) => todo!(),
@@ -294,10 +371,12 @@ impl Compiler {
 			lir::ExpressionValue::Op(op, lhs, rhs) => {
 				match op {
 					lir::Op::Add => Some(BasicValueEnum::IntValue(builder.build_int_add(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "addtmp"))),
-					lir::Op::Sub => Some(BasicValueEnum::IntValue(builder.build_int_sub(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "addtmp"))),
-					lir::Op::Mul => Some(BasicValueEnum::IntValue(builder.build_int_mul(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "addtmp"))),
-					lir::Op::Div => Some(BasicValueEnum::IntValue(builder.build_int_signed_div(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "addtmp"))),
-					lir::Op::Rem => Some(BasicValueEnum::IntValue(builder.build_int_signed_rem(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "addtmp"))),
+					lir::Op::Sub => Some(BasicValueEnum::IntValue(builder.build_int_sub(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "subtmp"))),
+					lir::Op::Mul => Some(BasicValueEnum::IntValue(builder.build_int_mul(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "multmp"))),
+					lir::Op::Div => Some(BasicValueEnum::IntValue(builder.build_int_signed_div(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "divtmp"))),
+					lir::Op::Rem => Some(BasicValueEnum::IntValue(builder.build_int_signed_rem(self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "remtmp"))),
+					lir::Op::Eq => Some(BasicValueEnum::IntValue(builder.build_int_compare(IntPredicate::EQ, self.compile_expr(lhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), self.compile_expr(rhs.value, pointers, global_pool, module, fn_value, builder, current_block)?.into_int_value(), "eqtmp"))),
+					_ => todo!(),
 				}
 			}
 			lir::ExpressionValue::CallConcrete(id, args) => {
@@ -308,11 +387,10 @@ impl Compiler {
 			lir::ExpressionValue::ConstInt(val) => Some(BasicValueEnum::IntValue(self.llvm.i32_type().const_int(val as u64, true))),
 			lir::ExpressionValue::ConstStr(i) => Some(BasicValueEnum::PointerValue(global_pool.strings[i].as_pointer_value())), //TODO: Caching?
 			lir::ExpressionValue::LExpr(lexpr) => Some(builder.build_load(self.compile_lexpr(lexpr.value, pointers, global_pool, module, fn_value, builder, current_block), "loadtmp")),
-		    lir::ExpressionValue::If(_) => todo!(),
 		}
 	}
 
-	fn compile_lexpr<'ctx>(&'ctx self, expr: lir::LExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, _global_pool: &GlobalPool<'ctx>, _module: &Module<'ctx>, _fn_value: FunctionValue<'ctx>, _builder: &Builder<'ctx>, current_block: &mut BasicBlock<'ctx>) -> PointerValue<'ctx> {
+	fn compile_lexpr<'ctx>(&'ctx self, expr: lir::LExpressionValue, pointers: &HashMap<String, PointerValue<'ctx>>, _global_pool: &GlobalPool<'ctx>, _module: &Module<'ctx>, _fn_value: FunctionValue<'ctx>, _builder: &Builder<'ctx>, _current_block: &mut BasicBlock<'ctx>) -> PointerValue<'ctx> {
 		match expr {
 			lir::LExpressionValue::Var(ident) => match ident {
 				lir::Ident::Local(_) => pointers.get(&ident.local_mangle()).expect("Local variable should have been declared").clone(),

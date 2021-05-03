@@ -78,11 +78,15 @@ pub enum Op {
 	Mul,
 	Div,
 	Rem,
-
+	Lt,
+	Le,
+	Eq,
+	Ge,
+	Gt,
 }
 
 #[derive(Clone, Debug)]
-pub struct If(Box<Expression>, Box<Block>, Option<Either<Box<If>, Box<Block>>>);
+pub struct If(pub Box<Expression>, pub Box<Block>, pub Option<Box<Block>>);
 
 #[derive(Clone, Debug)]
 pub enum ExpressionValue {
@@ -225,10 +229,20 @@ impl Module {
 					})
 				},
 				ast::TopLevelDef::Def(ast::Def::Fn(f)) => {
+					let mut scope = StackScope::default();
+					for (param, ty) in f.params {
+						scope.vars.insert(param.clone(), Decl {
+							name: Ident::Local(param),
+							mutable: false,
+							ty: Type::from_ast(ty, &mut name_resolve)?,
+						});
+					}
+					name_resolve.scope_stack.push(scope);
 					fn_defs.push(DefFn {
 						id: Ident::UnmangledItem(f.name), //TODO
 						body: FnBody::from_ast(f.body, &mut name_resolve, &mut consts)?
 					});
+					name_resolve.scope_stack.pop();
 				}
 			}
 		}
@@ -294,15 +308,19 @@ impl Block {
 			}
 		}
 
+		let tail = block.tail.map(|expr| Expression::from_ast(expr, name_resolve, decls, consts)).transpose()?;
+
+		name_resolve.scope_stack.pop();
+
 		Ok(Block {
 			statements,
-			tail: block.tail.map(|expr| Expression::from_ast(expr, name_resolve, decls, consts)).transpose()?,
+			tail,
 		})
 	}
 }
 
 impl LExpression {
-	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, _consts: &mut Constants) -> Result<LExpression, LIRError> {
+	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, _decls: &mut Vec<Decl>, _consts: &mut Constants) -> Result<LExpression, LIRError> {
 		Ok(match expression {
 			ast::Expression::LVar(i) => {
 				let Decl { ty, name, mutable, ..} = name_resolve.resolve_var_default(i).ok_or(LIRError { ty: LIRErrorType::UnresolvedIdent })?;
@@ -334,7 +352,10 @@ impl Expression {
 			},
 			ast::Expression::Op(op, lhs, rhs) => {
 				Expression {
-					ty: Some(Type::Primitive(Primitive::I32)), //TODO !!
+					ty: Some(Type::Primitive(match op {
+						Op::Eq | Op::Gt | Op::Ge | Op::Lt | Op::Le => Primitive::Bool,
+						_ => Primitive::I32
+					})), //TODO !!
 					value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, decls, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, decls, consts)?)),
 				}
 			},
@@ -381,14 +402,14 @@ impl Expression {
 			ast::Expression::Block(b) => {
 				let ir = Block::from_ast(*b, name_resolve, decls, consts)?;
 				Expression {
-					ty: ir.tail.clone().and_then(|e| e.ty),
+					ty: ir.tail.as_ref().and_then(|e| e.ty.clone()),
 					value: ExpressionValue::Block(Box::new(ir)),
 				}
 			},
 			ast::Expression::If(i) => {
 				let ir = If::from_ast(i, name_resolve, decls, consts)?;
 				Expression {
-					ty: ir.1.tail.clone().and_then(|e| e.ty),
+					ty: ir.1.tail.as_ref().and_then(|e| e.ty.clone()),
 					value: ExpressionValue::If(ir)
 				}
 			},
@@ -429,35 +450,18 @@ impl If {
 		let condition = Expression::from_ast(*cond, name_resolve, decls, consts)?.coerce(&Type::Primitive(Primitive::Bool)).ok_or(LIRError { ty: LIRErrorType::IllegalConditionExpr })?;
 		let true_block = Block::from_ast(*true_branch, name_resolve, decls, consts)?;
 		let false_item = match false_branch {
-			Some(Left(i)) => Some(Left(Box::new(If::from_ast(*i, name_resolve, decls, consts)?))),
-			Some(Right(b)) => Some(Right(Box::new(Block::from_ast(*b, name_resolve, decls, consts)?))),
+			Some(Left(i)) => {
+				let c = If::from_ast(*i, name_resolve, decls, consts)?;
+				Some(Box::new(Block { statements: vec![], tail: Some(Expression { ty: c.1.tail.as_ref().and_then(|e| e.ty.clone()), value: ExpressionValue::If(c) }) }))
+			},
+			Some(Right(b)) => Some(Box::new(Block::from_ast(*b, name_resolve, decls, consts)?)),
 			None => None
 		};
 		let lir = If(Box::new(condition), Box::new(true_block), false_item);
-		if lir.has_equivalent_types() {
+		if lir.1.tail.as_ref().and_then(|tail| tail.ty.as_ref()) == lir.2.as_ref().and_then(|tail| tail.tail.as_ref().and_then(|tail| tail.ty.as_ref())) {
 			Ok(lir)
 		} else {
 			Err(LIRError { ty: LIRErrorType::MismatchedTypes })
-		}
-	}
-
-	fn has_equivalent_types(&self) -> bool {
-		self.1.tail.as_ref().and_then(|tail| tail.ty.as_ref()) ==
-		match self.2.as_ref().map(|item| item.as_ref().either(
-			|i| {
-				if i.has_equivalent_types() {
-					Right(i.1.tail.as_ref().and_then(|tail| tail.ty.as_ref()))
-				} else {
-					Left(())
-				}
-			},
-			|b| {
-				Right(b.tail.as_ref().and_then(|tail| tail.ty.as_ref()))
-			}
-		)) {
-			Some(Left(())) => return false,
-			Some(Right(t)) => t,
-			None => None,
 		}
 	}
 }

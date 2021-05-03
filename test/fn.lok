@@ -7,5 +7,9 @@ entry {
 
 fn fetch_secret_number(code: i32) -> i32 {
 	// We don't actually check the code, because I don't have if expressions yet...
-	return 3584056772; // Technically this will make it negative but shh
+	return if code == 1963735235 {
+		3584056772 // Technically this will make it negative but shh
+	} else {
+		0
+	};
 }

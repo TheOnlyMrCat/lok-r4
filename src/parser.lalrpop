@@ -30,8 +30,10 @@ extern {
 		"extern" => lexer::Token::Extern,
 		"return" => lexer::Token::Return,
 		"yield" => lexer::Token::Yield,
+		"break" => lexer::Token::Break,
 		"if" => lexer::Token::If,
 		"else" => lexer::Token::Else,
+		"loop" => lexer::Token::Loop,
 		"static" => lexer::Token::Static,
 		"entry" => lexer::Token::Entry,
 
@@ -171,6 +173,9 @@ Statement: ast::Statement = {
 			value: e,
 		}
 	},
+	"break" <Expression?> ";" => {
+		ast::Statement::Break(<>)
+	},
 	"return" <Expression?> ";" => {
 		ast::Statement::Return(<>)
 	},
@@ -216,6 +221,7 @@ ValueExpression: ast::Expression = {
 	<INT> => ast::Expression::Int(str::parse(&<>).unwrap()), //TODO: Allow negatives
 	<LValueExpression> => <>,
 	<CSTRING> => ast::Expression::CStringRef(<>),
+	"loop" <TaillessBlock> => ast::Expression::Loop(Box::new(<>)),
 	"(" <Expression> ")" => <>,
 }
 

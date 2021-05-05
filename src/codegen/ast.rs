@@ -69,6 +69,7 @@ pub enum Statement {
 		value: Expression,
 	},
 	Expression(Expression),
+	Break(Option<Expression>),
 	Return(Option<Expression>),
 }
 
@@ -80,6 +81,7 @@ pub struct If(pub Box<Expression>, pub Box<Block>, pub Option<Either<Box<If>, Bo
 #[derive(Debug)]
 pub enum Expression {
 	If(If),
+	Loop(Box<Block>),
 	Block(Box<Block>),
 
 	Assign(Box<Expression>, Option<Op>, Box<Expression>),

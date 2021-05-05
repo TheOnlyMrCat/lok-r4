@@ -55,6 +55,7 @@ pub struct Block {
 pub enum Statement {
 	Decl(String, Expression),
 	Eval(Expression),
+	Break(Option<Expression>),
 	Return(Option<Expression>),
 }
 
@@ -91,6 +92,7 @@ pub struct If(pub Box<Expression>, pub Box<Block>, pub Option<Box<Block>>);
 #[derive(Clone, Debug)]
 pub enum ExpressionValue {
 	If(If),
+	Loop(Box<Block>),
 	Block(Box<Block>),
 
 	Assign(Option<Op>, LExpression, Box<Expression>),
@@ -118,6 +120,7 @@ pub struct Decl {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Type {
+	Never,
 	Primitive(Primitive),
 	Name(Ident),
 	PtrConst(Box<Type>),
@@ -272,27 +275,42 @@ impl FnBody {
 		let mut decls = vec![];
 
 		Ok(FnBody {
-			block: Block::from_ast(block, name_resolve, &mut decls, consts)?,
+			block: Block::from_ast(block, name_resolve, &mut decls, &mut Vec::new(), consts)?,
 			decls,
 		})
 	}
 }
 
 impl Block {
-	fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<Block, LIRError> {
+	fn from_ast(block: ast::Block, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, loops: &mut Vec<LoopBreak>, consts: &mut Constants) -> Result<Block, LIRError> {
 		let mut statements = vec![];
 		name_resolve.scope_stack.push(StackScope::default());
 
 		for statement in block.statements {
 			match statement {
 				ast::Statement::Expression(e) => {
-					statements.push(Statement::Eval(Expression::from_ast(e, name_resolve, decls, consts)?))
+					statements.push(Statement::Eval(Expression::from_ast(e, name_resolve, decls, loops, consts)?))
 				},
+				ast::Statement::Break(e) => {
+					let expr = e.map(|e| Expression::from_ast(e, name_resolve, decls, loops, consts)).transpose()?;
+					if let Some(loop_bk) = loops.last_mut() {
+						if let Some(ty) = loop_bk.ty.as_ref() {
+							if expr.as_ref().and_then(|e| e.ty.as_ref()) != ty.as_ref() {
+								Err(LIRError { ty: LIRErrorType::MismatchedTypes })?;
+							}
+						} else {
+							loop_bk.ty = Some(expr.as_ref().and_then(|e| e.ty.clone()));
+						}
+						statements.push(Statement::Break(expr));
+					} else {
+						Err(LIRError { ty: LIRErrorType::BreakOutsideLoop })?;
+					}
+				}
 				ast::Statement::Return(e) => {
-					statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, decls, consts)).transpose()?))
+					statements.push(Statement::Return(e.map(|e| Expression::from_ast(e, name_resolve, decls, loops, consts)).transpose()?))
 				}
 				ast::Statement::Decl { name, mutable, expected_type, value } => {
-					let mut expr = Expression::from_ast(value, name_resolve, decls, consts)?;
+					let mut expr = Expression::from_ast(value, name_resolve, decls, loops, consts)?;
 					if let Some(expected) = expected_type {
 						expr = expr.coerce(&Type::from_ast(expected, name_resolve)?).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
 					}
@@ -308,7 +326,7 @@ impl Block {
 			}
 		}
 
-		let tail = block.tail.map(|expr| Expression::from_ast(expr, name_resolve, decls, consts)).transpose()?;
+		let tail = block.tail.map(|expr| Expression::from_ast(expr, name_resolve, decls, loops, consts)).transpose()?;
 
 		name_resolve.scope_stack.pop();
 
@@ -336,14 +354,14 @@ impl LExpression {
 }
 
 impl Expression {
-	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<Expression, LIRError> {
+	fn from_ast(expression: ast::Expression, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, loops: &mut Vec<LoopBreak>, consts: &mut Constants) -> Result<Expression, LIRError> {
 		Ok(match expression {
 			ast::Expression::Assign(lhs, op, rhs) => {
 				let lvalue = LExpression::from_ast(*lhs, name_resolve, decls, consts)?;
 				if !lvalue.mutable {
 					Err(LIRError { ty: LIRErrorType::ImmutAssign })?;
 				}
-				let rvalue = Expression::from_ast(*rhs, name_resolve, decls, consts)?.coerce(&lvalue.ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
+				let rvalue = Expression::from_ast(*rhs, name_resolve, decls, loops, consts)?.coerce(&lvalue.ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })?;
 
 				Expression {
 					ty: Some(lvalue.ty.clone()),
@@ -356,7 +374,7 @@ impl Expression {
 						Op::Eq | Op::Gt | Op::Ge | Op::Lt | Op::Le => Primitive::Bool,
 						_ => Primitive::I32
 					})), //TODO !!
-					value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, decls, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, decls, consts)?)),
+					value: ExpressionValue::Op(op, Box::new(Expression::from_ast(*lhs, name_resolve, decls, loops, consts)?), Box::new(Expression::from_ast(*rhs, name_resolve, decls, loops, consts)?)),
 				}
 			},
 			ast::Expression::Call(f, mut a) => {
@@ -375,13 +393,13 @@ impl Expression {
 
 						let args = a.into_iter()
 							.zip(decl.params.iter())
-							.map(|(e, (_, ty))| Expression::from_ast(e, name_resolve, decls, consts)?
+							.map(|(e, (_, ty))| Expression::from_ast(e, name_resolve, decls, loops, consts)?
 								.coerce(ty).ok_or(LIRError { ty: LIRErrorType::MismatchedTypes })
 							)
 							.collect::<Vec<_>>()
 							.into_iter()
 							.chain(varargs.into_iter()
-								.map(|e| Expression::from_ast(e, name_resolve, decls, consts))
+								.map(|e| Expression::from_ast(e, name_resolve, decls, loops, consts))
 							)
 							.collect::<Result<Vec<_>, _>>()?;
 
@@ -400,17 +418,29 @@ impl Expression {
 				}
 			},
 			ast::Expression::Block(b) => {
-				let ir = Block::from_ast(*b, name_resolve, decls, consts)?;
+				let ir = Block::from_ast(*b, name_resolve, decls, loops, consts)?;
 				Expression {
 					ty: ir.tail.as_ref().and_then(|e| e.ty.clone()),
 					value: ExpressionValue::Block(Box::new(ir)),
 				}
 			},
 			ast::Expression::If(i) => {
-				let ir = If::from_ast(i, name_resolve, decls, consts)?;
+				let ir = If::from_ast(i, name_resolve, decls, loops, consts)?;
 				Expression {
 					ty: ir.1.tail.as_ref().and_then(|e| e.ty.clone()),
 					value: ExpressionValue::If(ir)
+				}
+			},
+			ast::Expression::Loop(b) => {
+				loops.push(LoopBreak {
+				    name: "".to_owned(),
+				    ty: None,
+				});
+				let block = Block::from_ast(*b, name_resolve, decls, loops, consts)?;
+				let brk = loops.pop().unwrap();
+				Expression {
+					ty: brk.ty.unwrap_or(Some(Type::Never)),
+					value: ExpressionValue::Loop(Box::new(block)),
 				}
 			},
 			ast::Expression::CStringRef(s) => {
@@ -445,16 +475,16 @@ impl Expression {
 }
 
 impl If {
-	fn from_ast(ast: ast::If, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, consts: &mut Constants) -> Result<If, LIRError> {
+	fn from_ast(ast: ast::If, name_resolve: &mut NameResolveMap, decls: &mut Vec<Decl>, loops: &mut Vec<LoopBreak>, consts: &mut Constants) -> Result<If, LIRError> {
 		let ast::If(cond, true_branch, false_branch) = ast;
-		let condition = Expression::from_ast(*cond, name_resolve, decls, consts)?.coerce(&Type::Primitive(Primitive::Bool)).ok_or(LIRError { ty: LIRErrorType::IllegalConditionExpr })?;
-		let true_block = Block::from_ast(*true_branch, name_resolve, decls, consts)?;
+		let condition = Expression::from_ast(*cond, name_resolve, decls, loops, consts)?.coerce(&Type::Primitive(Primitive::Bool)).ok_or(LIRError { ty: LIRErrorType::IllegalConditionExpr })?;
+		let true_block = Block::from_ast(*true_branch, name_resolve, decls, loops, consts)?;
 		let false_item = match false_branch {
 			Some(Left(i)) => {
-				let c = If::from_ast(*i, name_resolve, decls, consts)?;
+				let c = If::from_ast(*i, name_resolve, decls, loops, consts)?;
 				Some(Box::new(Block { statements: vec![], tail: Some(Expression { ty: c.1.tail.as_ref().and_then(|e| e.ty.clone()), value: ExpressionValue::If(c) }) }))
 			},
-			Some(Right(b)) => Some(Box::new(Block::from_ast(*b, name_resolve, decls, consts)?)),
+			Some(Right(b)) => Some(Box::new(Block::from_ast(*b, name_resolve, decls, loops, consts)?)),
 			None => None
 		};
 		let lir = If(Box::new(condition), Box::new(true_block), false_item);
@@ -529,6 +559,11 @@ impl Ident {
 			_ => panic!("Attempted to mangle incompatible id as local"),
 		}
 	}
+}
+
+struct LoopBreak {
+	name: String,
+	ty: Option<Option<Type>>, // Outer option is assignment, inner option is for void or not
 }
 
 fn integer_type_for_value(_value: u64) -> Type {

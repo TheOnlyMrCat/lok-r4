@@ -17,6 +17,7 @@ fn main() {
 	module.print_to_file("todo.lir").unwrap();
 	let compiler = codegen::Compiler::new();
 	let compiled_mod = compiler.compile_lir_module(module);
+	// compiled_mod.verify().unwrap();
 	compiler.print_ir(&compiled_mod, "todo.ll");
 	compiler.write_module(&compiled_mod, "todo.o");
 }

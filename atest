@@ -1,5 +1,4 @@
 #lok
-RUSTFLAGS="-L src/gen"
 make | true
 cargo run -- "test/$1.lok"
 gcc todo.o -o todo
@@ -22,4 +21,9 @@ Calculation: 6 + 7 - 5 * 4 + 4 + 4 / 2 = -1
 #0
 Wow so secret: -710910524
 
+#/-
+
+## ctrl: lok
+#0
+Successfully broke with value 1!
 #/-

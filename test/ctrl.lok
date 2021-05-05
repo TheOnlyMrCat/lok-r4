@@ -1,3 +1,13 @@
+extern fn puts(*const c_char) -> c_int;
+extern fn printf(*const c_char...) -> c_int;
+
 entry {
-	
+	let val = loop {
+		if 1 == 1 {
+			break 1;
+		}
+		puts(c"Uh oh, let's try that again");
+	};
+
+	printf(c"Successfully broke with value %d!", val);
 }

@@ -14,8 +14,10 @@ enum Token {
 	Token_Extern,
 	Token_Return,
 	Token_Yield,
+	Token_Break,
 	Token_If,
 	Token_Else,
+	Token_Loop,
 	Token_Static,
 	Token_Entry,
 	Token_Dyn,
@@ -96,8 +98,10 @@ use return Token_Use;
 extern return Token_Extern;
 return return Token_Return;
 yield return Token_Yield;
+break return Token_Break;
 if return Token_If;
 else return Token_Else;
+loop return Token_Loop;
 static return Token_Static;
 entry return Token_Entry;
 

@@ -14,4 +14,5 @@ pub enum LIRErrorType {
 	InvalidLValueExpr,
 	ImmutAssign,
 	IllegalConditionExpr,
+	BreakOutsideLoop,
 }
